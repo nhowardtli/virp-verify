@@ -24,12 +24,20 @@ fn appendix_a_entries_reproduce_canonical_bytes_and_hash() {
             .unwrap_or_else(|err| panic!("fixture {name}: parse: {err}"));
         let rebuilt = fields.canonical_bytes();
         assert_eq!(rebuilt, canonical_utf8.as_bytes(), "fixture {name}: canonical bytes");
-        assert_eq!(rebuilt.len() as i64, i64_of(e, "canonical_len"), "fixture {name}: canonical_len");
+        assert_eq!(
+            rebuilt.len() as i64,
+            i64_of(e, "canonical_len"),
+            "fixture {name}: canonical_len"
+        );
         let canonical_hex = str_of(e, "canonical_hex");
         if !canonical_hex.is_empty() {
             assert_eq!(rebuilt, unhex(canonical_hex), "fixture {name}: canonical_hex");
         }
-        assert_eq!(fields.entry_hash_hex(), str_of(e, "chain_entry_hash"), "fixture {name}: chain_entry_hash");
+        assert_eq!(
+            fields.entry_hash_hex(),
+            str_of(e, "chain_entry_hash"),
+            "fixture {name}: chain_entry_hash"
+        );
         assert_eq!(fields.sequence, i64_of(e, "sequence"));
         assert_eq!(fields.session_id, str_of(e, "session_id"));
         assert_eq!(fields.artifact_type, str_of(e, "type_note"));
@@ -42,7 +50,10 @@ fn appendix_a_genesis_rule() {
     // Explicit genesis value for approval:clab-frr-ospf-frr1.
     let g0 = &fx["genesis"][0];
     assert_eq!(str_of(g0, "session_id"), "approval:clab-frr-ospf-frr1");
-    assert_eq!(genesis_hash_hex("approval:clab-frr-ospf-frr1"), str_of(g0, "genesis_hash"));
+    assert_eq!(
+        genesis_hash_hex("approval:clab-frr-ospf-frr1"),
+        str_of(g0, "genesis_hash")
+    );
     // Fixture A is sequence 0 of autopilot:2026-08-22; its previous_entry_hash
     // must be that session's genesis.
     let a = EntryFields::parse_canonical(str_of(&fx["entries"]["A"], "canonical_utf8").as_bytes()).unwrap();
@@ -87,14 +98,22 @@ fn signing_vectors_messages_reproduce() {
         let name = str_of(v, "name");
         let msg = str_of(v, "message_utf8");
         let msg_hex = unhex(str_of(v, "message_hex"));
-        assert_eq!(msg.as_bytes(), msg_hex.as_slice(), "{name}: message_utf8 vs message_hex");
+        assert_eq!(
+            msg.as_bytes(),
+            msg_hex.as_slice(),
+            "{name}: message_utf8 vs message_hex"
+        );
         match str_of(v, "tag") {
             "entry" => {
                 let f = EntryFields::parse_canonical(msg.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert_eq!(f.canonical_bytes(), msg_hex, "{name}: rebuilt entry canonical");
                 if name == "inv-lock-entry-0" {
                     assert_eq!(f.sequence, 0);
-                    assert_eq!(genesis_hash_hex(&f.session_id), f.previous_entry_hash, "{name}: genesis");
+                    assert_eq!(
+                        genesis_hash_hex(&f.session_id),
+                        f.previous_entry_hash,
+                        "{name}: genesis"
+                    );
                     inv_entry_hash = Some(f.entry_hash_hex());
                 }
             }
@@ -138,7 +157,11 @@ fn every_single_byte_mutation_of_a_canonical_changes_the_hash() {
         for i in 0..canonical.len() {
             let mut m = canonical.clone();
             m[i] ^= 0x01;
-            assert_ne!(sha256_hex(&m), expected, "fixture {name}: flipped bit at byte {i} went undetected");
+            assert_ne!(
+                sha256_hex(&m),
+                expected,
+                "fixture {name}: flipped bit at byte {i} went undetected"
+            );
         }
     }
 }
@@ -149,22 +172,98 @@ fn every_field_mutation_changes_canonical_and_hash() {
     let base = EntryFields::parse_canonical(str_of(&fx["entries"]["B"], "canonical_utf8").as_bytes()).unwrap();
     let base_hash = base.entry_hash_hex();
     let mutants: Vec<(&str, EntryFields)> = vec![
-        ("artifact_hash", EntryFields { artifact_hash: flip_last(&base.artifact_hash), ..base.clone() }),
-        ("artifact_hash_alg", EntryFields { artifact_hash_alg: "sha512".into(), ..base.clone() }),
-        ("artifact_id", EntryFields { artifact_id: format!("{}x", base.artifact_id), ..base.clone() }),
-        ("artifact_schema_version", EntryFields { artifact_schema_version: "2".into(), ..base.clone() }),
-        ("artifact_type", EntryFields { artifact_type: "outcome".into(), ..base.clone() }),
-        ("monotonic_ns", EntryFields { monotonic_ns: base.monotonic_ns + 1, ..base.clone() }),
-        ("previous_entry_hash", EntryFields { previous_entry_hash: flip_last(&base.previous_entry_hash), ..base.clone() }),
-        ("sequence", EntryFields { sequence: base.sequence + 1, ..base.clone() }),
-        ("session_id", EntryFields { session_id: format!("{}2", base.session_id), ..base.clone() }),
-        ("signer_node_id", EntryFields { signer_node_id: base.signer_node_id + 1, ..base.clone() }),
-        ("signer_org_id", EntryFields { signer_org_id: "remote".into(), ..base.clone() }),
-        ("timestamp_ns", EntryFields { timestamp_ns: base.timestamp_ns - 1, ..base.clone() }),
+        (
+            "artifact_hash",
+            EntryFields {
+                artifact_hash: flip_last(&base.artifact_hash),
+                ..base.clone()
+            },
+        ),
+        (
+            "artifact_hash_alg",
+            EntryFields {
+                artifact_hash_alg: "sha512".into(),
+                ..base.clone()
+            },
+        ),
+        (
+            "artifact_id",
+            EntryFields {
+                artifact_id: format!("{}x", base.artifact_id),
+                ..base.clone()
+            },
+        ),
+        (
+            "artifact_schema_version",
+            EntryFields {
+                artifact_schema_version: "2".into(),
+                ..base.clone()
+            },
+        ),
+        (
+            "artifact_type",
+            EntryFields {
+                artifact_type: "outcome".into(),
+                ..base.clone()
+            },
+        ),
+        (
+            "monotonic_ns",
+            EntryFields {
+                monotonic_ns: base.monotonic_ns + 1,
+                ..base.clone()
+            },
+        ),
+        (
+            "previous_entry_hash",
+            EntryFields {
+                previous_entry_hash: flip_last(&base.previous_entry_hash),
+                ..base.clone()
+            },
+        ),
+        (
+            "sequence",
+            EntryFields {
+                sequence: base.sequence + 1,
+                ..base.clone()
+            },
+        ),
+        (
+            "session_id",
+            EntryFields {
+                session_id: format!("{}2", base.session_id),
+                ..base.clone()
+            },
+        ),
+        (
+            "signer_node_id",
+            EntryFields {
+                signer_node_id: base.signer_node_id + 1,
+                ..base.clone()
+            },
+        ),
+        (
+            "signer_org_id",
+            EntryFields {
+                signer_org_id: "remote".into(),
+                ..base.clone()
+            },
+        ),
+        (
+            "timestamp_ns",
+            EntryFields {
+                timestamp_ns: base.timestamp_ns - 1,
+                ..base.clone()
+            },
+        ),
     ];
     assert_eq!(mutants.len(), 12, "one mutant per canonical field");
     for (field, m) in mutants {
-        assert_ne!(m.canonical_bytes(), base.canonical_bytes(), "{field}: canonical unchanged");
+        assert_ne!(
+            m.canonical_bytes(),
+            base.canonical_bytes(),
+            "{field}: canonical unchanged"
+        );
         assert_ne!(m.entry_hash_hex(), base_hash, "{field}: hash unchanged");
     }
 }
@@ -179,23 +278,53 @@ fn head_mutations_change_canonical() {
         last_entry_hash: str_of(h, "last_entry_hash").to_owned(),
     };
     let b = base.canonical_bytes();
-    assert_ne!(HeadFields { last_sequence: base.last_sequence + 1, ..base.clone() }.canonical_bytes(), b);
-    assert_ne!(HeadFields { last_entry_hash: flip_last(&base.last_entry_hash), ..base.clone() }.canonical_bytes(), b);
-    assert_ne!(HeadFields { session_id: "approval:clab-frr-ospf-frr2".into(), ..base.clone() }.canonical_bytes(), b);
+    assert_ne!(
+        HeadFields {
+            last_sequence: base.last_sequence + 1,
+            ..base.clone()
+        }
+        .canonical_bytes(),
+        b
+    );
+    assert_ne!(
+        HeadFields {
+            last_entry_hash: flip_last(&base.last_entry_hash),
+            ..base.clone()
+        }
+        .canonical_bytes(),
+        b
+    );
+    assert_ne!(
+        HeadFields {
+            session_id: "approval:clab-frr-ospf-frr2".into(),
+            ..base.clone()
+        }
+        .canonical_bytes(),
+        b
+    );
     // And the tag is load-bearing: a head with a different version tag does not parse.
-    let tampered = String::from_utf8(b.clone()).unwrap().replace("VIRP-CHAIN-HEAD-v1", "VIRP-CHAIN-HEAD-v2");
+    let tampered = String::from_utf8(b.clone())
+        .unwrap()
+        .replace("VIRP-CHAIN-HEAD-v1", "VIRP-CHAIN-HEAD-v2");
     assert!(HeadFields::parse_canonical(tampered.as_bytes()).is_err());
 }
 
 #[test]
 fn every_public_key_byte_mutation_changes_key_id() {
     let vx = load_json("chain-signing-v1.json");
-    let pk: [u8; 32] = unhex(str_of(&vx["test_key"], "public_key_hex")).as_slice().try_into().unwrap();
+    let pk: [u8; 32] = unhex(str_of(&vx["test_key"], "public_key_hex"))
+        .as_slice()
+        .try_into()
+        .unwrap();
     let kid = key_id_hex(&pk);
     for i in 0..32 {
         let mut m = pk;
         m[i] ^= 0x80;
-        assert_ne!(key_id_hex(&m), kid, "pubkey byte {i} mutation went undetected in key_id");
+        assert_ne!(
+            key_id_hex(&m),
+            kid,
+            "pubkey byte {i} mutation went undetected in key_id"
+        );
     }
 }
 

@@ -37,5 +37,4 @@ pub fn unhex(s: &str) -> Vec<u8> {
 
 /// Appendix A fixtures: the seal file records this file's SHA-256, so the
 /// copy we carry is anchored to the seal.
-pub const FIXTURES_APPENDIX_A_SHA256: &str =
-    "cd022ae2f7b9b5efda2d0f46bb8c14c356d1918feb4b80bf52c043d14c30b8ab";
+pub const FIXTURES_APPENDIX_A_SHA256: &str = "cd022ae2f7b9b5efda2d0f46bb8c14c356d1918feb4b80bf52c043d14c30b8ab";

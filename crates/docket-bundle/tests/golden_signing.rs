@@ -6,7 +6,9 @@ mod common;
 
 use common::*;
 use docket_bundle::sig::{signature_from_hex, signed_input, ENTRY_SIG_TAG, HEAD_SIG_TAG, SCHEME};
-use docket_bundle::{check_session_key_binding, sha256_hex, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
+use docket_bundle::{
+    check_session_key_binding, sha256_hex, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError,
+};
 
 fn test_pubkey() -> PublicKey {
     let vx = load_json("chain-signing-v1.json");
@@ -59,7 +61,11 @@ fn signed_input_hashes_reproduce() {
     for v in vx["vectors"].as_array().unwrap() {
         let name = str_of(v, "name");
         let input = signed_input(domain_of(str_of(v, "tag")), str_of(v, "message_utf8").as_bytes());
-        assert_eq!(sha256_hex(&input), str_of(v, "signed_input_sha256"), "{name}: signed_input_sha256");
+        assert_eq!(
+            sha256_hex(&input),
+            str_of(v, "signed_input_sha256"),
+            "{name}: signed_input_sha256"
+        );
     }
 }
 
@@ -92,7 +98,11 @@ fn entry_signature_must_not_validate_under_head_tag_and_vice_versa() {
             SigDomain::Head => SigDomain::Entry,
         };
         let r = pk.verify_hex(wrong, str_of(v, "message_utf8").as_bytes(), str_of(v, "signature_hex"));
-        assert_eq!(r, Err(SigError::BadSignature), "{name}: validated under the wrong domain tag");
+        assert_eq!(
+            r,
+            Err(SigError::BadSignature),
+            "{name}: validated under the wrong domain tag"
+        );
         // And with no tag at all (the raw canonical) it must also fail —
         // the tag is load-bearing.
         let sig = signature_from_hex(str_of(v, "signature_hex")).unwrap();
@@ -125,13 +135,23 @@ fn every_single_byte_mutation_of_message_is_rejected() {
         for i in 0..msg.len() {
             let mut m = msg.clone();
             m[i] ^= 0x01;
-            assert_eq!(pk.verify(domain, &m, &sig), Err(SigError::BadSignature), "{name}: byte {i} mutation accepted");
+            assert_eq!(
+                pk.verify(domain, &m, &sig),
+                Err(SigError::BadSignature),
+                "{name}: byte {i} mutation accepted"
+            );
         }
         // Truncation and extension are also rejected.
-        assert!(pk.verify(domain, &msg[..msg.len() - 1], &sig).is_err(), "{name}: truncated message accepted");
+        assert!(
+            pk.verify(domain, &msg[..msg.len() - 1], &sig).is_err(),
+            "{name}: truncated message accepted"
+        );
         let mut ext = msg.clone();
         ext.push(b' ');
-        assert!(pk.verify(domain, &ext, &sig).is_err(), "{name}: extended message accepted");
+        assert!(
+            pk.verify(domain, &ext, &sig).is_err(),
+            "{name}: extended message accepted"
+        );
     }
 }
 
@@ -147,7 +167,10 @@ fn every_single_byte_mutation_of_signature_is_rejected() {
         for i in 0..64 {
             let mut s = sig;
             s[i] ^= 0x01;
-            assert!(pk.verify(domain, msg, &s).is_err(), "{name}: signature byte {i} mutation accepted");
+            assert!(
+                pk.verify(domain, msg, &s).is_err(),
+                "{name}: signature byte {i} mutation accepted"
+            );
         }
     }
 }
@@ -159,7 +182,11 @@ fn wrong_public_key_is_rejected() {
     assert_ne!(wrong.key_id(), test_pubkey().key_id());
     for v in vx["vectors"].as_array().unwrap() {
         let name = str_of(v, "name");
-        let r = wrong.verify_hex(domain_of(str_of(v, "tag")), str_of(v, "message_utf8").as_bytes(), str_of(v, "signature_hex"));
+        let r = wrong.verify_hex(
+            domain_of(str_of(v, "tag")),
+            str_of(v, "message_utf8").as_bytes(),
+            str_of(v, "signature_hex"),
+        );
         assert_eq!(r, Err(SigError::BadSignature), "{name}: verified under a foreign key");
     }
     // And a pubkey with a flipped byte is either invalid or rejects every vector.
@@ -167,7 +194,11 @@ fn wrong_public_key_is_rejected() {
     raw[0] ^= 0x01;
     if let Ok(near) = PublicKey::from_bytes(&raw) {
         for v in vx["vectors"].as_array().unwrap() {
-            let r = near.verify_hex(domain_of(str_of(v, "tag")), str_of(v, "message_utf8").as_bytes(), str_of(v, "signature_hex"));
+            let r = near.verify_hex(
+                domain_of(str_of(v, "tag")),
+                str_of(v, "message_utf8").as_bytes(),
+                str_of(v, "signature_hex"),
+            );
             assert!(r.is_err());
         }
     }
@@ -178,14 +209,29 @@ fn malformed_inputs_are_rejected_cleanly() {
     assert_eq!(PublicKey::from_hex("zz").unwrap_err(), SigError::InvalidPublicKey);
     assert_eq!(PublicKey::from_hex("00").unwrap_err(), SigError::InvalidPublicKey);
     // Wrong lengths are rejected before any curve work.
-    assert_eq!(PublicKey::from_hex(&"00".repeat(31)).unwrap_err(), SigError::InvalidPublicKey);
-    assert_eq!(PublicKey::from_hex(&"00".repeat(33)).unwrap_err(), SigError::InvalidPublicKey);
+    assert_eq!(
+        PublicKey::from_hex(&"00".repeat(31)).unwrap_err(),
+        SigError::InvalidPublicKey
+    );
+    assert_eq!(
+        PublicKey::from_hex(&"00".repeat(33)).unwrap_err(),
+        SigError::InvalidPublicKey
+    );
     assert_eq!(signature_from_hex("abcd").unwrap_err(), SigError::MalformedSignature);
-    assert_eq!(signature_from_hex(&"0".repeat(130)).unwrap_err(), SigError::MalformedSignature);
+    assert_eq!(
+        signature_from_hex(&"0".repeat(130)).unwrap_err(),
+        SigError::MalformedSignature
+    );
     let pk = test_pubkey();
-    assert_eq!(pk.verify_hex(SigDomain::Entry, b"x", "not-hex").unwrap_err(), SigError::MalformedSignature);
+    assert_eq!(
+        pk.verify_hex(SigDomain::Entry, b"x", "not-hex").unwrap_err(),
+        SigError::MalformedSignature
+    );
     // A zero signature is rejected (not a panic).
-    assert_eq!(pk.verify(SigDomain::Entry, b"x", &[0u8; 64]).unwrap_err(), SigError::BadSignature);
+    assert_eq!(
+        pk.verify(SigDomain::Entry, b"x", &[0u8; 64]).unwrap_err(),
+        SigError::BadSignature
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +252,11 @@ fn session_key_rule_mismatch_is_a_failure_not_a_skip() {
     let r = check_session_key_binding(Some(head), [(0, Some(head)), (1, Some(other)), (2, Some(head))]);
     assert_eq!(
         r,
-        Err(SessionKeyError::KeyIdMismatch { sequence: 1, entry_key_id: other.to_owned(), head_key_id: head.to_owned() })
+        Err(SessionKeyError::KeyIdMismatch {
+            sequence: 1,
+            entry_key_id: other.to_owned(),
+            head_key_id: head.to_owned()
+        })
     );
 }
 
@@ -224,15 +274,32 @@ fn session_key_rule_stripped_signature_is_a_failure() {
 fn session_key_rule_unsigned_head_never_fails() {
     let k = "24f6ed6acbfe1009c030d7ca567c33ca";
     let r = check_session_key_binding(None, [(0, None), (1, Some(k)), (2, None)]);
-    assert_eq!(r, Ok(SessionKeyBinding::UnsignedSession { entries_with_signatures: 1 }));
+    assert_eq!(
+        r,
+        Ok(SessionKeyBinding::UnsignedSession {
+            entries_with_signatures: 1
+        })
+    );
     let r = check_session_key_binding(None, std::iter::empty());
-    assert_eq!(r, Ok(SessionKeyBinding::UnsignedSession { entries_with_signatures: 0 }));
+    assert_eq!(
+        r,
+        Ok(SessionKeyBinding::UnsignedSession {
+            entries_with_signatures: 0
+        })
+    );
 }
 
 #[test]
 fn session_key_rule_reports_first_violation_in_chain_order() {
     let head = "24f6ed6acbfe1009c030d7ca567c33ca";
-    let r = check_session_key_binding(Some(head), [(0, Some(head)), (1, None), (2, Some("00000000000000000000000000000000"))]);
+    let r = check_session_key_binding(
+        Some(head),
+        [
+            (0, Some(head)),
+            (1, None),
+            (2, Some("00000000000000000000000000000000")),
+        ],
+    );
     assert_eq!(r, Err(SessionKeyError::StrippedSignature { sequence: 1 }));
 }
 
@@ -244,12 +311,24 @@ fn session_key_rule_reports_first_violation_in_chain_order() {
 fn crate_source_contains_no_signing_or_secret_material() {
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     // `unsafe_code` (the forbid lint) is allowed; actual unsafe syntax is not.
-    let forbidden = ["SigningKey", "secret_key", "seed_hex", "unsafe {", "unsafe fn", "unsafe impl", "unsafe extern"];
+    let forbidden = [
+        "SigningKey",
+        "secret_key",
+        "seed_hex",
+        "unsafe {",
+        "unsafe fn",
+        "unsafe impl",
+        "unsafe extern",
+    ];
     for entry in std::fs::read_dir(&src).unwrap() {
         let path = entry.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
         for needle in forbidden {
-            assert!(!text.contains(needle), "{} mentions forbidden token {needle:?}", path.display());
+            assert!(
+                !text.contains(needle),
+                "{} mentions forbidden token {needle:?}",
+                path.display()
+            );
         }
     }
 }

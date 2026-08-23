@@ -1,0 +1,10 @@
+{
+  "keys": [
+    {
+      "key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+      "algorithm": "ed25519",
+      "public_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+      "comment": "VIRP chain-signing TEST key from tests/vectors/chain-signing-v1.json (public; seed is public; never a production key)"
+    }
+  ]
+}

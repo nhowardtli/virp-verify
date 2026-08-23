@@ -1,0 +1,37 @@
+{
+  "session_id": "inv-lock-1",
+  "entries": [
+    {
+      "artifact_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:inv-lock:0001",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 123456789012345,
+      "previous_entry_hash": "18d2b8a84c417dc511143e5cce9d4f50313041d0ff750cd548697be7ca33e656",
+      "sequence": 0,
+      "session_id": "inv-lock-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000000123456789,
+      "chain_entry_hash": "d9278b4a17debc43c289a591b2ec6ae9a0deb0db7c8fb10ff0bbdc0cfbca0f1b",
+      "canonical_utf8": "{\"artifact_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"artifact_hash_alg\":\"sha256\",\"artifact_id\":\"obs:inv-lock:0001\",\"artifact_schema_version\":\"1\",\"artifact_type\":\"observation\",\"monotonic_ns\":123456789012345,\"previous_entry_hash\":\"18d2b8a84c417dc511143e5cce9d4f50313041d0ff750cd548697be7ca33e656\",\"sequence\":0,\"session_id\":\"inv-lock-1\",\"signer_node_id\":1,\"signer_org_id\":\"local\",\"timestamp_ns\":1787000000123456789}",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "9626512b488a795de6156f70a6bf47fd6b5d83a14aa6ed88949eb270da6cea08bc0260690c3ce20e6c97e5ed35d666b075d98930909b0b5c36d8abba3d5fa20d"
+      }
+    }
+  ],
+  "head": {
+    "session_id": "inv-lock-1",
+    "last_sequence": 0,
+    "last_entry_hash": "d9278b4a17debc43c289a591b2ec6ae9a0deb0db7c8fb10ff0bbdc0cfbca0f1b",
+    "canonical_utf8": "{\"last_entry_hash\":\"d9278b4a17debc43c289a591b2ec6ae9a0deb0db7c8fb10ff0bbdc0cfbca0f1b\",\"last_sequence\":0,\"session_id\":\"inv-lock-1\",\"v\":\"VIRP-CHAIN-HEAD-v1\"}",
+    "signature": {
+      "signature_scheme": "ed25519-detached-v1",
+      "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+      "signature_hex": "fa78fc4b10f486b9a47544e90a58751f2f6196dce51aa6fc3cf07f8d732a2ee54a8db073c523294bae21d0e8cd2d700160bd8f6be13f9720453b32f5e8c6ee0b"
+    }
+  }
+}

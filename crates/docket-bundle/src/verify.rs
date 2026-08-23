@@ -41,6 +41,12 @@ pub struct ChainEntry {
     pub fields: EntryFields,
     /// The producer's stored hash (what we recompute and compare against).
     pub chain_entry_hash: String,
+    /// Optional verbatim copy of the canonical bytes (the exact signed
+    /// input). When present it MUST equal the bytes rebuilt from `fields`;
+    /// a mismatch is a failure. Lets a bundle carry the signed bytes
+    /// themselves, not only their preimage fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_utf8: Option<String>,
     /// HMAC-SHA256 under `K_chain`. Docket cannot verify this; it is carried
     /// so the operator-attested tier can be *reported*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,6 +61,9 @@ pub struct ChainEntry {
 pub struct ChainHead {
     #[serde(flatten)]
     pub fields: HeadFields,
+    /// Optional verbatim copy of the head canonical bytes; must match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_utf8: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_hmac: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,7 +263,11 @@ impl SessionReport {
 pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport {
     let mut props: Vec<PropertyReport> = Vec::with_capacity(property::ALL.len());
     let push = |props: &mut Vec<PropertyReport>, name: &str, status: Status, detail: String| {
-        props.push(PropertyReport { name: name.to_owned(), status, detail });
+        props.push(PropertyReport {
+            name: name.to_owned(),
+            status,
+            detail,
+        });
     };
 
     let n = chain.entries.len();
@@ -270,18 +283,35 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         let mut status = Status::Verified;
         for (i, e) in chain.entries.iter().enumerate() {
             if !is_hex_digest_64(&e.chain_entry_hash) {
-                status = Status::failed(format!("stored chain_entry_hash at sequence {} is not a 64-hex digest", e.fields.sequence));
+                status = Status::failed(format!(
+                    "stored chain_entry_hash at sequence {} is not a 64-hex digest",
+                    e.fields.sequence
+                ));
                 break;
             }
             if computed_hashes[i] != e.chain_entry_hash {
                 status = Status::failed(format!("entry hash mismatch at sequence {}", e.fields.sequence));
                 break;
             }
+            if let Some(c) = &e.canonical_utf8 {
+                if c.as_bytes() != canonicals[i].as_slice() {
+                    status = Status::failed(format!(
+                        "carried canonical_utf8 at sequence {} differs from the canonical rebuilt from its fields",
+                        e.fields.sequence
+                    ));
+                    break;
+                }
+            }
         }
         if n == 0 {
             status = Status::failed("session has no entries");
         }
-        push(&mut props, property::ENTRY_HASHES, status, format!("{n} entries recomputed (SHA-256 over canonical bytes)"));
+        push(
+            &mut props,
+            property::ENTRY_HASHES,
+            status,
+            format!("{n} entries recomputed (SHA-256 over canonical bytes)"),
+        );
     }
 
     // contiguity: sequences 0..n, each entry's session_id matches.
@@ -303,7 +333,16 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
                 break;
             }
         }
-        push(&mut props, property::CONTIGUITY, status, format!("sequences 0..{} contiguous, all in session {:?}", n.saturating_sub(1), chain.session_id));
+        push(
+            &mut props,
+            property::CONTIGUITY,
+            status,
+            format!(
+                "sequences 0..{} contiguous, all in session {:?}",
+                n.saturating_sub(1),
+                chain.session_id
+            ),
+        );
     }
 
     // genesis
@@ -311,11 +350,20 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         let expected = genesis_hash_hex(&chain.session_id);
         let status = match chain.entries.first() {
             None => Status::failed("session has no entries"),
-            Some(e0) if e0.fields.sequence != 0 => Status::failed(format!("first entry is sequence {}, not 0", e0.fields.sequence)),
-            Some(e0) if e0.fields.previous_entry_hash != expected => Status::failed("sequence 0 previous_entry_hash is not the session genesis"),
+            Some(e0) if e0.fields.sequence != 0 => {
+                Status::failed(format!("first entry is sequence {}, not 0", e0.fields.sequence))
+            }
+            Some(e0) if e0.fields.previous_entry_hash != expected => {
+                Status::failed("sequence 0 previous_entry_hash is not the session genesis")
+            }
             Some(_) => Status::Verified,
         };
-        push(&mut props, property::GENESIS, status, format!("sha256(\"VIRP_CHAIN_GENESIS:\" + session_id) = {expected}"));
+        push(
+            &mut props,
+            property::GENESIS,
+            status,
+            format!("sha256(\"VIRP_CHAIN_GENESIS:\" + session_id) = {expected}"),
+        );
     }
 
     // links: previous_entry_hash[i] == computed hash[i-1]
@@ -323,14 +371,22 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         let mut status = Status::Verified;
         for i in 1..n {
             if chain.entries[i].fields.previous_entry_hash != computed_hashes[i - 1] {
-                status = Status::failed(format!("previous hash mismatch at sequence {}", chain.entries[i].fields.sequence));
+                status = Status::failed(format!(
+                    "previous hash mismatch at sequence {}",
+                    chain.entries[i].fields.sequence
+                ));
                 break;
             }
         }
         if n == 0 {
             status = Status::failed("session has no entries");
         }
-        push(&mut props, property::LINKS, status, format!("{} links checked against recomputed hashes", n.saturating_sub(1)));
+        push(
+            &mut props,
+            property::LINKS,
+            status,
+            format!("{} links checked against recomputed hashes", n.saturating_sub(1)),
+        );
     }
 
     // head_commitment: the head names the last recomputed entry.
@@ -341,11 +397,26 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         (Some(_), None, _) | (Some(_), _, None) => Status::failed("head present but session has no entries"),
         (Some(h), Some(last), Some(last_hash)) => {
             if h.fields.session_id != chain.session_id {
-                Status::failed(format!("head belongs to session {:?}, not {:?}", h.fields.session_id, chain.session_id))
+                Status::failed(format!(
+                    "head belongs to session {:?}, not {:?}",
+                    h.fields.session_id, chain.session_id
+                ))
             } else if h.fields.last_sequence != last.fields.sequence {
-                Status::failed(format!("head commits to last_sequence {} but last entry is {}", h.fields.last_sequence, last.fields.sequence))
+                Status::failed(format!(
+                    "head commits to last_sequence {} but last entry is {}",
+                    h.fields.last_sequence, last.fields.sequence
+                ))
             } else if h.fields.last_entry_hash != *last_hash {
-                Status::failed(format!("head does not match final verified entry at sequence {}", last.fields.sequence))
+                Status::failed(format!(
+                    "head does not match final verified entry at sequence {}",
+                    last.fields.sequence
+                ))
+            } else if h
+                .canonical_utf8
+                .as_ref()
+                .is_some_and(|c| c.as_bytes() != h.fields.canonical_bytes().as_slice())
+            {
+                Status::failed("carried head canonical_utf8 differs from the canonical rebuilt from its fields")
             } else {
                 Status::Verified
             }
@@ -356,7 +427,10 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         property::HEAD_COMMITMENT,
         head_status,
         match &chain.head {
-            Some(h) => format!("head commits to sequence {} hash {}", h.fields.last_sequence, h.fields.last_entry_hash),
+            Some(h) => format!(
+                "head commits to sequence {} hash {}",
+                h.fields.last_sequence, h.fields.last_entry_hash
+            ),
             None => "no head record".to_owned(),
         },
     );
@@ -366,7 +440,11 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     // present, reported as operator-attested. Never Verified.
     {
         let with = chain.entries.iter().filter(|e| e.chain_hmac.is_some()).count();
-        let malformed = chain.entries.iter().filter(|e| e.chain_hmac.as_deref().is_some_and(|h| !is_hex_digest_64(h))).count();
+        let malformed = chain
+            .entries
+            .iter()
+            .filter(|e| e.chain_hmac.as_deref().is_some_and(|h| !is_hex_digest_64(h)))
+            .count();
         let status = if malformed > 0 {
             Status::failed(format!("{malformed} chain_hmac values are not 64-hex digests"))
         } else if with == 0 {
@@ -387,7 +465,12 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
             Some(h) if !is_hex_digest_64(h) => Status::failed("head_hmac is not a 64-hex digest"),
             Some(_) => Status::OperatorAttested,
         };
-        push(&mut props, property::HEAD_HMAC, status, "HMAC-SHA256 under the operator's K_chain, which this verifier does not hold".to_owned());
+        push(
+            &mut props,
+            property::HEAD_HMAC,
+            status,
+            "HMAC-SHA256 under the operator's K_chain, which this verifier does not hold".to_owned(),
+        );
     }
 
     // --- asymmetric tier --------------------------------------------------
@@ -414,7 +497,9 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     let head_sig_status = match (&key_state, head_sig, &chain.head) {
         (KeyState::UnsignedHead, _, _) => Status::Absent,
         (KeyState::BadScheme(s), _, _) => Status::failed(format!("head signature_scheme {s:?} is not {SCHEME}")),
-        (KeyState::Unavailable(kid), _, _) => Status::unverifiable(format!("head is signed under key_id {kid}, which this verifier was not given")),
+        (KeyState::Unavailable(kid), _, _) => Status::unverifiable(format!(
+            "head is signed under key_id {kid}, which this verifier was not given"
+        )),
         (KeyState::Available(pk), Some(sig), Some(head)) => {
             let canonical = head.fields.canonical_bytes();
             match pk.verify_hex(SigDomain::Head, &canonical, &sig.signature_hex) {
@@ -440,7 +525,12 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     // head-signed session is structurally wrong regardless of who verifies.
     let binding = check_session_key_binding(
         signing_key_id.as_deref(),
-        chain.entries.iter().map(|e| (e.fields.sequence, e.signature.as_ref().map(|s| s.signing_key_id.as_str()))),
+        chain.entries.iter().map(|e| {
+            (
+                e.fields.sequence,
+                e.signature.as_ref().map(|s| s.signing_key_id.as_str()),
+            )
+        }),
     );
     let binding_status = match &binding {
         Ok(SessionKeyBinding::Bound { .. }) => Status::Verified,
@@ -454,7 +544,9 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         binding_status,
         match &binding {
             Ok(SessionKeyBinding::Bound { key_id }) => format!("every entry signed under the head's key_id {key_id}"),
-            Ok(SessionKeyBinding::UnsignedSession { entries_with_signatures }) => {
+            Ok(SessionKeyBinding::UnsignedSession {
+                entries_with_signatures,
+            }) => {
                 format!("head unsigned; {entries_with_signatures}/{n} entries carry signatures (not graded)")
             }
             Err(_) => "session-granularity key rule violated".to_owned(),
@@ -465,7 +557,9 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     let entry_sig_status = match &key_state {
         KeyState::UnsignedHead => Status::Absent,
         KeyState::BadScheme(_) => Status::failed("head signature scheme unsupported; entry signatures not graded"),
-        KeyState::Unavailable(kid) => Status::unverifiable(format!("entries are signed under key_id {kid}, which this verifier was not given")),
+        KeyState::Unavailable(kid) => Status::unverifiable(format!(
+            "entries are signed under key_id {kid}, which this verifier was not given"
+        )),
         KeyState::Available(pk) => {
             if !binding_ok {
                 Status::failed("session key binding failed; entry signatures cannot be trusted")
@@ -474,15 +568,24 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
                 for (i, e) in chain.entries.iter().enumerate() {
                     // binding_ok guarantees a signature is present with the head's key id.
                     let Some(sig) = e.signature.as_ref() else {
-                        status = Status::failed(format!("internal: missing signature at sequence {} after binding check", e.fields.sequence));
+                        status = Status::failed(format!(
+                            "internal: missing signature at sequence {} after binding check",
+                            e.fields.sequence
+                        ));
                         break;
                     };
                     if sig.signature_scheme != SCHEME {
-                        status = Status::failed(format!("entry at sequence {} has signature_scheme {:?}, not {SCHEME}", e.fields.sequence, sig.signature_scheme));
+                        status = Status::failed(format!(
+                            "entry at sequence {} has signature_scheme {:?}, not {SCHEME}",
+                            e.fields.sequence, sig.signature_scheme
+                        ));
                         break;
                     }
                     if let Err(err) = pk.verify_hex(SigDomain::Entry, &canonicals[i], &sig.signature_hex) {
-                        status = Status::failed(format!("Ed25519 signature verification failed at sequence {} ({err})", e.fields.sequence));
+                        status = Status::failed(format!(
+                            "Ed25519 signature verification failed at sequence {} ({err})",
+                            e.fields.sequence
+                        ));
                         break;
                     }
                 }

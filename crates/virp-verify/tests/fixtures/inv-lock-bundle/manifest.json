@@ -1,0 +1,14 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket bootstrap session 2026-08-23 (synthetic fixture from golden vectors)",
+  "created_at": "2026-08-23T02:00:00Z",
+  "sessions": [
+    {
+      "session_id": "inv-lock-1",
+      "path": "sessions/inv-lock-1.json"
+    }
+  ],
+  "keys": "keys.json",
+  "seal": "seal/seal-2026-08.json"
+}

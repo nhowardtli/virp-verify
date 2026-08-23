@@ -63,7 +63,10 @@ impl PublicKey {
     /// valid compressed Edwards point.
     pub fn from_bytes(raw: &[u8; 32]) -> Result<PublicKey, SigError> {
         let key = VerifyingKey::from_bytes(raw).map_err(|_| SigError::InvalidPublicKey)?;
-        Ok(PublicKey { key, key_id: key_id_hex(raw) })
+        Ok(PublicKey {
+            key,
+            key_id: key_id_hex(raw),
+        })
     }
 
     /// From 64 lowercase/uppercase hex characters.
@@ -156,7 +159,11 @@ pub enum SessionKeyError {
     StrippedSignature { sequence: i64 },
     /// Head-signed session, but the entry at `sequence` is signed under a
     /// different key than the head.
-    KeyIdMismatch { sequence: i64, entry_key_id: String, head_key_id: String },
+    KeyIdMismatch {
+        sequence: i64,
+        entry_key_id: String,
+        head_key_id: String,
+    },
 }
 
 impl std::fmt::Display for SessionKeyError {
@@ -166,7 +173,11 @@ impl std::fmt::Display for SessionKeyError {
                 f,
                 "missing Ed25519 signature at sequence {sequence} in a head-signed session (stripped signature)"
             ),
-            Self::KeyIdMismatch { sequence, entry_key_id, head_key_id } => write!(
+            Self::KeyIdMismatch {
+                sequence,
+                entry_key_id,
+                head_key_id,
+            } => write!(
                 f,
                 "signature key_id mismatch at sequence {sequence} (entry {entry_key_id}, head {head_key_id})"
             ),
@@ -181,14 +192,19 @@ impl std::error::Error for SessionKeyError {}
 /// `head_key_id` is the head's `signing_key_id` (None = unsigned head).
 /// `entries` yields `(sequence, entry signing_key_id)` in chain order
 /// (None = entry carries no signature). The first violation is returned.
-pub fn check_session_key_binding<'a, I>(head_key_id: Option<&str>, entries: I) -> Result<SessionKeyBinding, SessionKeyError>
+pub fn check_session_key_binding<'a, I>(
+    head_key_id: Option<&str>,
+    entries: I,
+) -> Result<SessionKeyBinding, SessionKeyError>
 where
     I: IntoIterator<Item = (i64, Option<&'a str>)>,
 {
     match head_key_id {
         None => {
             let signed = entries.into_iter().filter(|(_, k)| k.is_some()).count();
-            Ok(SessionKeyBinding::UnsignedSession { entries_with_signatures: signed })
+            Ok(SessionKeyBinding::UnsignedSession {
+                entries_with_signatures: signed,
+            })
         }
         Some(head) => {
             for (sequence, entry_key) in entries {
@@ -204,7 +220,9 @@ where
                     Some(_) => {}
                 }
             }
-            Ok(SessionKeyBinding::Bound { key_id: head.to_owned() })
+            Ok(SessionKeyBinding::Bound {
+                key_id: head.to_owned(),
+            })
         }
     }
 }

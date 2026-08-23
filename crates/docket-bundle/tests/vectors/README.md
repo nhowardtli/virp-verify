@@ -11,3 +11,4 @@ on canonical bytes, hashes, key_ids and Ed25519 signatures.
 
 Do not edit. If a value here won't reproduce, that is a finding, not a
 fixture to soften.
+| `seal-2026-08.json` | `tools/seal/seal-2026-08.json` — the D-0 seal (virp-seal/1): 350 session heads, Merkle root, residual disclosure. Public document; its minisign signature lives beside it in the VIRP tree and is NOT checked by Docket yet |

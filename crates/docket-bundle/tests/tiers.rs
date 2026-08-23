@@ -9,7 +9,8 @@ mod common;
 use common::*;
 use docket_bundle::verify::property;
 use docket_bundle::{
-    verify_session, ChainEntry, ChainHead, DetachedSignature, EntryFields, HeadFields, Keyring, PublicKey, SessionChain, Status, Verdict,
+    verify_session, ChainEntry, ChainHead, DetachedSignature, EntryFields, HeadFields, Keyring, PublicKey,
+    SessionChain, Status, Verdict,
 };
 
 const SCHEME: &str = "ed25519-detached-v1";
@@ -32,7 +33,13 @@ fn keyring_with_test_key() -> Keyring {
 
 fn vector(name: &str) -> serde_json::Value {
     let vx = load_json("chain-signing-v1.json");
-    vx["vectors"].as_array().unwrap().iter().find(|v| str_of(v, "name") == name).cloned().unwrap()
+    vx["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| str_of(v, "name") == name)
+        .cloned()
+        .unwrap()
 }
 
 /// The golden one-entry signed session.
@@ -46,6 +53,7 @@ fn inv_lock_session() -> SessionChain {
         session_id: "inv-lock-1".into(),
         entries: vec![ChainEntry {
             chain_entry_hash: fields.entry_hash_hex(),
+            canonical_utf8: Some(str_of(&ev, "message_utf8").into()),
             fields,
             chain_hmac: Some(PLACEHOLDER_HMAC.into()),
             signature: Some(DetachedSignature {
@@ -56,6 +64,7 @@ fn inv_lock_session() -> SessionChain {
         }],
         head: Some(ChainHead {
             fields: head_fields,
+            canonical_utf8: Some(str_of(&hv, "message_utf8").into()),
             head_hmac: Some(PLACEHOLDER_HMAC.into()),
             signature: Some(DetachedSignature {
                 signature_scheme: SCHEME.into(),
@@ -90,6 +99,7 @@ fn synthetic_session(sid: &str, n: usize, with_hmac: bool) -> SessionChain {
         entries.push(ChainEntry {
             fields,
             chain_entry_hash: h.clone(),
+            canonical_utf8: None,
             chain_hmac: with_hmac.then(|| PLACEHOLDER_HMAC.into()),
             signature: None,
         });
@@ -98,7 +108,12 @@ fn synthetic_session(sid: &str, n: usize, with_hmac: bool) -> SessionChain {
     SessionChain {
         session_id: sid.into(),
         head: Some(ChainHead {
-            fields: HeadFields { session_id: sid.into(), last_sequence: n as i64 - 1, last_entry_hash: prev },
+            fields: HeadFields {
+                session_id: sid.into(),
+                last_sequence: n as i64 - 1,
+                last_entry_hash: prev,
+            },
+            canonical_utf8: None,
             head_hmac: with_hmac.then(|| PLACEHOLDER_HMAC.into()),
             signature: None,
         }),
@@ -127,14 +142,23 @@ fn golden_signed_session_is_cryptographically_verified_with_public_key() {
     assert_eq!(r.signing_key_id.as_deref(), Some("24f6ed6acbfe1009c030d7ca567c33ca"));
     assert_eq!(r.entry_count, 1);
     assert_eq!(r.properties.len(), property::ALL.len());
-    assert_eq!(r.properties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), property::ALL.to_vec());
+    assert_eq!(
+        r.properties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        property::ALL.to_vec()
+    );
 }
 
 #[test]
 fn golden_signed_session_without_key_is_unverifiable_not_verified() {
     let r = verify_session(&inv_lock_session(), &Keyring::new());
-    assert!(matches!(status_of(&r, property::HEAD_SIGNATURE), Status::Unverifiable { .. }));
-    assert!(matches!(status_of(&r, property::ENTRY_SIGNATURES), Status::Unverifiable { .. }));
+    assert!(matches!(
+        status_of(&r, property::HEAD_SIGNATURE),
+        Status::Unverifiable { .. }
+    ));
+    assert!(matches!(
+        status_of(&r, property::ENTRY_SIGNATURES),
+        Status::Unverifiable { .. }
+    ));
     // The key rule is structural and is still graded without the key.
     assert_eq!(status_of(&r, property::SESSION_KEY_BINDING), &Status::Verified);
     assert_eq!(status_of(&r, property::ENTRY_HASHES), &Status::Verified);
@@ -147,7 +171,10 @@ fn golden_signed_session_with_wrong_key_in_keyring_is_unverifiable() {
     let mut k = Keyring::new();
     k.insert(PublicKey::from_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a").unwrap());
     let r = verify_session(&inv_lock_session(), &k);
-    assert!(matches!(status_of(&r, property::HEAD_SIGNATURE), Status::Unverifiable { .. }));
+    assert!(matches!(
+        status_of(&r, property::HEAD_SIGNATURE),
+        Status::Unverifiable { .. }
+    ));
     assert_eq!(r.verdict, Verdict::OperatorAttestedUnverifiable);
 }
 
@@ -231,15 +258,33 @@ fn unknown_signature_scheme_fails() {
 }
 
 #[test]
+fn carried_canonical_must_match_rebuilt_canonical() {
+    // A bundle that carries the signed bytes verbatim is checked against the
+    // bytes rebuilt from its fields, both ways.
+    let mut s = inv_lock_session();
+    s.entries[0].canonical_utf8.as_mut().unwrap().push(' ');
+    let r = verify_session(&s, &keyring_with_test_key());
+    assert!(status_of(&r, property::ENTRY_HASHES).is_failed());
+    assert_eq!(r.verdict, Verdict::Failed);
+    let mut s = inv_lock_session();
+    s.head.as_mut().unwrap().canonical_utf8 = Some("{}".into());
+    let r = verify_session(&s, &keyring_with_test_key());
+    assert!(status_of(&r, property::HEAD_COMMITMENT).is_failed());
+    assert_eq!(r.verdict, Verdict::Failed);
+}
+
+#[test]
 fn tampered_canonical_field_fails_hash_and_signature() {
     let mut s = inv_lock_session();
     s.entries[0].fields.artifact_id.push('x');
     let r = verify_session(&s, &keyring_with_test_key());
     assert!(status_of(&r, property::ENTRY_HASHES).is_failed());
     assert_eq!(r.verdict, Verdict::Failed);
-    // Even if the attacker also fixes up the stored hash and the head,
-    // the signatures still catch it.
+    // Even if the attacker also fixes up the stored hash, the carried
+    // canonical and the head, the signatures still catch it.
     s.entries[0].chain_entry_hash = s.entries[0].fields.entry_hash_hex();
+    s.entries[0].canonical_utf8 = Some(String::from_utf8(s.entries[0].fields.canonical_bytes()).unwrap());
+    s.head.as_mut().unwrap().canonical_utf8 = None;
     s.head.as_mut().unwrap().fields.last_entry_hash = s.entries[0].chain_entry_hash.clone();
     let r = verify_session(&s, &keyring_with_test_key());
     assert_eq!(status_of(&r, property::ENTRY_HASHES), &Status::Verified);
@@ -260,7 +305,13 @@ fn tampered_canonical_field_fails_hash_and_signature() {
 #[test]
 fn synthetic_unsigned_chain_with_hmacs_is_operator_attested() {
     let r = verify_session(&synthetic_session("docket-synth-1", 5, true), &Keyring::new());
-    for name in [property::ENTRY_HASHES, property::GENESIS, property::LINKS, property::CONTIGUITY, property::HEAD_COMMITMENT] {
+    for name in [
+        property::ENTRY_HASHES,
+        property::GENESIS,
+        property::LINKS,
+        property::CONTIGUITY,
+        property::HEAD_COMMITMENT,
+    ] {
         assert_eq!(status_of(&r, name), &Status::Verified, "{name}");
     }
     assert_eq!(status_of(&r, property::ENTRY_HMACS), &Status::OperatorAttested);
@@ -287,8 +338,14 @@ fn tampered_artifact_hash_breaks_entry_hash_and_link() {
     let mut s = synthetic_session("docket-synth-3", 4, true);
     s.entries[1].fields.artifact_hash = format!("{:064x}", 0xdead);
     let r = verify_session(&s, &Keyring::new());
-    assert_eq!(status_of(&r, property::ENTRY_HASHES), &Status::failed("entry hash mismatch at sequence 1"));
-    assert_eq!(status_of(&r, property::LINKS), &Status::failed("previous hash mismatch at sequence 2"));
+    assert_eq!(
+        status_of(&r, property::ENTRY_HASHES),
+        &Status::failed("entry hash mismatch at sequence 1")
+    );
+    assert_eq!(
+        status_of(&r, property::LINKS),
+        &Status::failed("previous hash mismatch at sequence 2")
+    );
     assert_eq!(r.verdict, Verdict::Failed);
 }
 
@@ -297,7 +354,10 @@ fn deleted_entry_breaks_contiguity() {
     let mut s = synthetic_session("docket-synth-4", 4, true);
     s.entries.remove(2);
     let r = verify_session(&s, &Keyring::new());
-    assert_eq!(status_of(&r, property::CONTIGUITY), &Status::failed("sequence gap: expected 2, got 3"));
+    assert_eq!(
+        status_of(&r, property::CONTIGUITY),
+        &Status::failed("sequence gap: expected 2, got 3")
+    );
     assert_eq!(r.verdict, Verdict::Failed);
 }
 
@@ -351,7 +411,11 @@ fn entry_from_another_session_fails_contiguity() {
 
 #[test]
 fn empty_session_fails() {
-    let s = SessionChain { session_id: "empty".into(), entries: vec![], head: None };
+    let s = SessionChain {
+        session_id: "empty".into(),
+        entries: vec![],
+        head: None,
+    };
     let r = verify_session(&s, &Keyring::new());
     assert_eq!(r.verdict, Verdict::Failed);
 }
@@ -381,7 +445,11 @@ fn operator_attested_is_never_verified() {
         for keyring in [Keyring::new(), keyring_with_test_key()] {
             let r = verify_session(s, &keyring);
             for name in [property::ENTRY_HMACS, property::HEAD_HMAC] {
-                assert_ne!(status_of(&r, name), &Status::Verified, "{name} reported VERIFIED — Docket holds no K_chain");
+                assert_ne!(
+                    status_of(&r, name),
+                    &Status::Verified,
+                    "{name} reported VERIFIED — Docket holds no K_chain"
+                );
             }
         }
     }

@@ -9,12 +9,24 @@
 //! verifies and reports. `unsafe` is forbidden workspace-wide.
 #![forbid(unsafe_code)]
 
+pub mod bundle;
 pub mod canonical;
 pub mod hash;
+pub mod seal;
 pub mod sig;
 pub mod verify;
 
+pub use bundle::{Bundle, BundleError, BundleReport};
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
+pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
-pub use verify::{verify_session, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, SessionChain, SessionReport, Status, Verdict};
+pub use verify::{
+    verify_session, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, SessionChain, SessionReport,
+    Status, Verdict,
+};
+
+/// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).
+pub fn report_to_json_pretty(report: &BundleReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(report)
+}

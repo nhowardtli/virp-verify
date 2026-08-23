@@ -557,7 +557,146 @@ class ExportAndVerify(unittest.TestCase):
         with open(EXPORT) as f:
             src = f.read()
         imports = {line.split()[1] for line in src.splitlines() if line.startswith(("import ", "from "))}
-        self.assertEqual(imports, {"argparse", "datetime", "hashlib", "json", "os", "re", "sqlite3", "sys", "urllib.parse"})
+        self.assertEqual(
+            imports,
+            {"argparse", "base64", "binascii", "datetime", "hashlib", "json", "os", "re", "sqlite3", "sys",
+             "urllib.parse"},
+        )
+
+
+# --- artifact bodies (--artifacts) -----------------------------------------
+
+
+ARTIFACTS_SCHEMA = """
+CREATE TABLE artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  artifact_id TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  artifact_content TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  created_at_ns INTEGER NOT NULL,
+  UNIQUE(artifact_id, artifact_hash)
+);
+"""
+
+
+def add_artifact(conn, artifact_id, artifact_hash, content, session_id=SYNTHETIC_SESSION):
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, artifact_type, artifact_content, artifact_hash, session_id,"
+        " created_at_ns) VALUES (?, 'observation', ?, ?, ?, 1)",
+        (artifact_id, content, artifact_hash, session_id),
+    )
+
+
+class ArtifactBodies(unittest.TestCase):
+    """--artifacts: bodies are carried as the exact bytes the artifact_hash
+    commits to, coverage is honest per entry, and the default (no-flag)
+    export is untouched."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-artifacts-")
+        self.db = os.path.join(self.tmp, "snapshot.db")
+        build_fixture_db(self.db)
+        # The synthetic session's artifact_hash values are sha256(b"body-<i>"),
+        # so real matching bodies exist. Store bodies 0,2,4 as plain TEXT and
+        # 1 under the daemon's base64 envelope; leave 3 with no body row.
+        conn = sqlite3.connect(self.db)
+        conn.executescript(ARTIFACTS_SCHEMA)
+        import base64 as b64
+        for i in (0, 2, 4):
+            add_artifact(conn, "obs:synthetic:%04d" % i, sha256_hex(b"body-%d" % i), "body-%d" % i)
+        add_artifact(conn, "obs:synthetic:0001", sha256_hex(b"body-1"),
+                     "base64:" + b64.b64encode(b"body-1").decode("ascii"))
+        conn.commit()
+        conn.close()
+        self.db_sha = sha256_file(self.db)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def out(self, name):
+        return os.path.join(self.tmp, name)
+
+    def test_gate_bodies_carried_verifier_grades_binding_verdict_unchanged(self):
+        out = self.out("bundle")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--artifacts")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("bodies: 4/5 entries have carried bodies; hash-only sequences: 3", r.stdout)
+        self.assertIn("artifact bodies carried: 4 distinct artifact_hash file(s)", r.stdout)
+        self.assertEqual(sha256_file(self.db), self.db_sha)
+
+        # The carried files are the exact preimages, raw bytes on disk —
+        # the base64 envelope is unwrapped, never carried.
+        for i in (0, 1, 2, 4):
+            path = os.path.join(out, "artifacts", sha256_hex(b"body-%d" % i))
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"body-%d" % i)
+        self.assertFalse(os.path.exists(os.path.join(out, "artifacts", sha256_hex(b"body-3"))))
+
+        code, text, report = verify(out)
+        self.assertEqual(code, 3, text)  # verdict identical to a hash-only export
+        s = session_report(report, SYNTHETIC_SESSION)
+        self.assertEqual(s["artifact_binding"]["status"], "verified")
+        cov = s["artifact_coverage"]
+        self.assertEqual((cov["entry_count"], cov["entries_with_body"]), (5, 4))
+        self.assertEqual(cov["hash_only_sequences"], [3])
+        self.assertIn("artifact_binding       VERIFIED", text)
+        self.assertIn("4/5 entries have carried bodies", text)
+
+    def test_default_export_is_unchanged_no_artifacts_key_no_directory(self):
+        out = self.out("plain")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "manifest.json")) as f:
+            manifest = json.load(f)
+        self.assertNotIn("artifacts", manifest)
+        self.assertEqual(sorted(os.listdir(out)), ["manifest.json", "sessions"])
+        code, _, report = verify(out)
+        self.assertEqual(code, 3)
+        s = session_report(report, SYNTHETIC_SESSION)
+        self.assertNotIn("artifact_binding", s)
+        self.assertNotIn("artifact_coverage", s)
+
+    def test_artifacts_flag_without_the_table_is_a_named_error(self):
+        db = os.path.join(self.tmp, "notable.db")
+        build_fixture_db(db)  # no artifacts table
+        r = run_export("--db", db, "--out", self.out("nt"), "--sessions", SYNTHETIC_SESSION, "--artifacts")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("'artifacts' does not exist", r.stderr)
+        self.assertIn("export without --artifacts", r.stderr)
+        self.assertFalse(os.path.exists(self.out("nt")))
+
+    def test_mismatched_stored_body_exports_as_is_and_the_verifier_fails_it(self):
+        # The store lies: a body that does not hash to its artifact_hash.
+        # The exporter must ship it unchanged; the JUDGE fails the bundle.
+        conn = sqlite3.connect(self.db)
+        conn.execute("DELETE FROM artifacts WHERE artifact_id = 'obs:synthetic:0000'")
+        add_artifact(conn, "obs:synthetic:0000", sha256_hex(b"body-0"), "not what was hashed")
+        conn.commit()
+        conn.close()
+        out = self.out("lying")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--artifacts")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "artifacts", sha256_hex(b"body-0")), "rb") as f:
+            self.assertEqual(f.read(), b"not what was hashed")
+        code, text, report = verify(out)
+        self.assertEqual(code, 1, text)
+        s = session_report(report, SYNTHETIC_SESSION)
+        self.assertEqual(s["artifact_binding"]["status"], "failed")
+        self.assertIn("sequence 0", s["artifact_binding"]["failure"])
+        self.assertEqual(report["verdict"], "failed")
+
+    def test_undecodable_base64_envelope_is_an_export_error(self):
+        conn = sqlite3.connect(self.db)
+        conn.execute("DELETE FROM artifacts WHERE artifact_id = 'obs:synthetic:0001'")
+        add_artifact(conn, "obs:synthetic:0001", sha256_hex(b"body-1"), "base64:!!not-base64!!")
+        conn.commit()
+        conn.close()
+        r = run_export("--db", self.db, "--out", self.out("bad"), "--sessions", SYNTHETIC_SESSION, "--artifacts")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("claims base64 but does not decode", r.stderr)
+        self.assertFalse(os.path.exists(self.out("bad")))
 
 
 if __name__ == "__main__":

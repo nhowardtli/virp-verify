@@ -4,7 +4,7 @@ export_bundle.py — export a Docket evidence bundle (directory form) from a
 VIRP chain database snapshot.
 
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> \
-        --sessions <id> [<id> ...] [--seal <seal-2026-08.json>]
+        --sessions <id> [<id> ...] [--seal <seal-2026-08.json>] [--artifacts]
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> --all-sessions
     python3 export_bundle.py --db <snapshot.db> --list-sessions
 
@@ -50,6 +50,21 @@ sessions/*.json {session_id, entries[...], head?}
   signature     {signature_scheme: "ed25519-detached-v1", signing_key_id,
                 signature_hex}
 seal/<file>     the virp-seal/1 document, byte-for-byte.
+artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
+                distinct artifact_hash, named in the manifest as
+                {"artifact_hash": "...", "path": "artifacts/..."}. The bytes
+                are recovered exactly as the producer hashed them: the
+                daemon stores bodies in the `artifacts` table either as
+                plain TEXT (hashed as UTF-8) or as "base64:<data>" (hashed
+                as the decoded bytes). Decoding that envelope is transport
+                unwrapping, not re-encoding — and the verifier recomputes
+                SHA-256 over the carried bytes against each entry's
+                artifact_hash, so a wrong recovery FAILS rather than
+                passing. Entries whose (artifact_id, artifact_hash) pair
+                has no body row export hash-only and the summary says so;
+                a stored body that does not hash to its column value is
+                exported AS STORED for the verifier to fail — fixing it
+                here would be judging.
 keys.json       NOT produced. The chain schema has no table of public keys
                 (the D-1 public half lives as a file on the daemon host), so
                 there is nothing in a database to export. A bundle without
@@ -61,6 +76,8 @@ canonical_utf8  NOT produced. The database does not store canonical bytes;
 """
 
 import argparse
+import base64
+import binascii
 import datetime
 import hashlib
 import json
@@ -102,6 +119,14 @@ ENTRIES_OPTIONAL = ["chain_sig", "chain_sig_key_id"]  # D-1; absent pre-cut-over
 HEADS_TABLE = "chain_heads"
 HEADS_REQUIRED = ["session_id", "last_sequence", "last_entry_hash", "head_hmac"]
 HEADS_OPTIONAL = ["head_sig", "head_sig_key_id"]  # D-1; absent pre-cut-over
+
+# Only consulted with --artifacts. The table is the daemon's body store;
+# a database without it simply cannot carry bodies.
+ARTIFACTS_TABLE = "artifacts"
+ARTIFACTS_REQUIRED = ["artifact_id", "artifact_hash", "artifact_content"]
+
+# The daemon's binary-body envelope in artifacts.artifact_content.
+BASE64_PREFIX = "base64:"
 
 # Cells that must be hex when present. Lengths are NOT enforced and case is
 # NOT normalised: well-formedness beyond "is hex" is the verifier's call.
@@ -305,6 +330,81 @@ def export_session(conn, session_id, present):
     return chain
 
 
+def discover_artifacts_schema(conn):
+    """Confirm the artifacts table exists with the columns --artifacts needs."""
+    cols = table_columns(conn, ARTIFACTS_TABLE)
+    if cols is None:
+        found_tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        raise ExportError(
+            f"--artifacts: table {ARTIFACTS_TABLE!r} does not exist in this database, so it carries no bodies\n"
+            f"  tables found: {found_tables}\n"
+            f"  export without --artifacts for a hash-only bundle"
+        )
+    missing = [c for c in ARTIFACTS_REQUIRED if c not in cols]
+    if missing:
+        raise ExportError(
+            f"--artifacts: table {ARTIFACTS_TABLE!r} is missing required column(s) {missing}\n"
+            f"  expected: {ARTIFACTS_REQUIRED}\n"
+            f"  found:    {cols}"
+        )
+
+
+def body_bytes(where, content):
+    """The exact bytes the producer hashed into artifact_hash.
+
+    Plain TEXT is hashed as its UTF-8 encoding; "base64:<data>" is hashed as
+    the decoded bytes. Unwrapping that envelope recovers bytes, it does not
+    re-encode content — and the verifier recomputes SHA-256 over what is
+    carried, so a wrong recovery is FAILED there, never silently accepted."""
+    if content is None:
+        raise ExportError(f"{where}: artifact_content is NULL; the body store cannot hold an absent body")
+    if isinstance(content, bytes):
+        return content
+    if not isinstance(content, str):
+        raise ExportError(f"{where}: artifact_content expected TEXT, found {type(content).__name__}")
+    if content.startswith(BASE64_PREFIX):
+        try:
+            return base64.b64decode(content[len(BASE64_PREFIX):], validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise ExportError(f"{where}: artifact_content claims base64 but does not decode: {e}") from e
+    return content.encode("utf-8")
+
+
+def fetch_artifact_bodies(conn, chains):
+    """Bodies for every entry of every selected chain.
+
+    Returns (store, coverage): store maps artifact_hash -> bytes (exactly as
+    stored, decoded from the envelope only); coverage maps session_id ->
+    (entries_with_body, [hash-only sequences]). An entry with no
+    (artifact_id, artifact_hash) row is hash-only — recorded, never faked.
+    Two rows disagreeing on the bytes for one artifact_hash is a store
+    conflict this exporter refuses to paper over."""
+    store = {}
+    coverage = {}
+    sql = f"SELECT artifact_content FROM {ARTIFACTS_TABLE} WHERE artifact_id = ? AND artifact_hash = ?"
+    for chain in chains:
+        with_body = 0
+        hash_only = []
+        for entry in chain["entries"]:
+            aid, ahash, seq = entry["artifact_id"], entry["artifact_hash"], entry["sequence"]
+            rows = conn.execute(sql, (aid, ahash)).fetchall()
+            if not rows:
+                hash_only.append(seq)
+                continue
+            # UNIQUE(artifact_id, artifact_hash) means at most one row.
+            where = f"{ARTIFACTS_TABLE} artifact_id={aid!r}"
+            data = body_bytes(where, rows[0][0])
+            if ahash in store and store[ahash] != data:
+                raise ExportError(
+                    f"{where}: the store holds two different bodies for artifact_hash {ahash}; "
+                    f"refusing to choose one"
+                )
+            store[ahash] = data
+            with_body += 1
+        coverage[chain["session_id"]] = (with_body, hash_only)
+    return store, coverage
+
+
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -354,13 +454,15 @@ def write_bytes(path, data):
     return hashlib.sha256(data).hexdigest()
 
 
-def run_export(db_path, out_dir, session_ids, seal_path, all_sessions):
+def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False):
     if os.path.lexists(out_dir):
         raise ExportError(f"output directory already exists: {out_dir} (refusing to overwrite; choose a new --out)")
 
     conn = open_readonly(db_path)
     try:
         present = discover_schema(conn)
+        if artifacts:
+            discover_artifacts_schema(conn)
         available = list_sessions(conn)
         available_ids = [s[0] for s in available]
 
@@ -383,6 +485,7 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions):
         # Read everything BEFORE creating the output directory, so a sanity
         # failure leaves nothing on disk.
         chains = [export_session(conn, sid, present) for sid in selected]
+        body_store, body_coverage = fetch_artifact_bodies(conn, chains) if artifacts else ({}, {})
     finally:
         conn.close()
 
@@ -410,6 +513,14 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions):
         digest = write_bytes(os.path.join(out_dir, rel), seal_bytes)
         written.append((rel, digest))
         manifest["seal"] = rel
+    if artifacts:
+        os.makedirs(os.path.join(out_dir, "artifacts"), exist_ok=False)
+        manifest["artifacts"] = []
+        for ahash in sorted(body_store):
+            rel = "artifacts/" + ahash
+            digest = write_bytes(os.path.join(out_dir, rel), body_store[ahash])
+            written.append((rel, digest))
+            manifest["artifacts"].append({"artifact_hash": ahash, "path": rel})
     digest = write_json(os.path.join(out_dir, "manifest.json"), manifest)
     written.insert(0, ("manifest.json", digest))
 
@@ -426,6 +537,14 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions):
             f"  {chain['session_id']}: {len(chain['entries'])} entries "
             f"({hmacs} with chain_hmac, {signed} with signature), {head_txt}"
         )
+        if artifacts:
+            with_body, hash_only = body_coverage[chain["session_id"]]
+            line = f"    bodies: {with_body}/{len(chain['entries'])} entries have carried bodies"
+            if hash_only:
+                line += f"; hash-only sequences: {', '.join(str(s) for s in hash_only)}"
+            print(line)
+    if artifacts:
+        print(f"  artifact bodies carried: {len(body_store)} distinct artifact_hash file(s) under artifacts/")
     print("files written (sha256):")
     for rel, digest in written:
         print(f"  {digest}  {rel}")
@@ -443,6 +562,12 @@ def main(argv=None):
     p.add_argument("--sessions", nargs="+", metavar="ID", help="session id(s) to export")
     p.add_argument("--all-sessions", action="store_true", help="export every session in the database")
     p.add_argument("--seal", help="path to a virp-seal/1 JSON document to copy into the bundle verbatim")
+    p.add_argument(
+        "--artifacts",
+        action="store_true",
+        help="also carry artifact BODIES (raw bytes from the artifacts table) so the verifier can grade "
+        "artifact binding and a reader can see what happened; without it the bundle is hash-only, as before",
+    )
     p.add_argument("--list-sessions", action="store_true", help="list session ids in the database and exit")
     args = p.parse_args(argv)
 
@@ -462,7 +587,7 @@ def main(argv=None):
             p.error("--out is required (unless --list-sessions)")
         if bool(args.sessions) == bool(args.all_sessions):
             p.error("give exactly one of --sessions <id>... or --all-sessions")
-        return run_export(args.db, args.out, args.sessions or [], args.seal, args.all_sessions)
+        return run_export(args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts)
     except ExportError as e:
         print(f"export_bundle.py: error: {e}", file=sys.stderr)
         return 2

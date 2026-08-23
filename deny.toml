@@ -1,0 +1,65 @@
+# cargo-deny configuration for the Docket workspace.
+# Run: cargo deny check   (CI runs the same command)
+
+[graph]
+all-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories: any known vulnerability, unmaintained, unsound or yanked crate
+# in the lockfile fails the check. No exceptions are configured.
+[advisories]
+version = 2
+db-path = "$CARGO_HOME/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses: an explicit permissive allowlist enumerating ONLY what the
+# current dependency tree actually needs (cargo deny list, 2026-08-23).
+# Add to this list deliberately when a new dependency requires it; do not
+# wildcard. Workspace crates are LicenseRef-Proprietary / publish = false
+# and are exempted via `private.ignore` rather than allowlisted.
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",   # most of the tree
+    "MIT",          # most of the tree; also satisfies fiat-crypto, memchr, zmij
+    "BSD-3-Clause", # curve25519-dalek, ed25519-dalek, subtle
+    "Unicode-3.0",  # unicode-ident ((MIT OR Apache-2.0) AND Unicode-3.0)
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+# ---------------------------------------------------------------------------
+# Bans: duplicate versions are a warning (syn 2.x + 3.x currently coexist
+# via curve25519-dalek-derive and serde_derive); wildcard version
+# requirements are an error. `allow-wildcard-paths` exempts only
+# version-less `path = ...` dependencies between this workspace's own
+# publish = false crates (virp-verify -> docket-bundle); any wildcard on a
+# registry dependency is still denied.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources: crates.io only. No git dependencies, no alternate registries.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

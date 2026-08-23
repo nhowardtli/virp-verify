@@ -11,6 +11,8 @@
 
 pub mod canonical;
 pub mod hash;
+pub mod sig;
 
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
+pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};

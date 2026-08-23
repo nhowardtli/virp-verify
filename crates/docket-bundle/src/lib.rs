@@ -12,7 +12,9 @@
 pub mod canonical;
 pub mod hash;
 pub mod sig;
+pub mod verify;
 
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
+pub use verify::{verify_session, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, SessionChain, SessionReport, Status, Verdict};

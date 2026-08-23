@@ -14,6 +14,9 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# docket view only (the local bundle viewer). Chosen over axum/tokio for its
+# 5-crate tree; see SESSION-SUMMARY-GUI.md for the comparison and approval.
+tiny_http = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -6,6 +6,7 @@
 //!   keys.json                optional — key_id → public key (see [`KeyFile`])
 //!   sessions/<name>.json     one [`SessionChain`] per session, paths named in the manifest
 //!   seal/<name>.json         optional D-0 seal anchor, path named in the manifest
+//!   artifacts/<hash>         optional raw artifact bodies, paths named in the manifest
 //! ```
 //!
 //! Every path in the manifest is relative to the bundle root and may not
@@ -18,9 +19,13 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::hash::is_hex_digest_64;
 use crate::seal::Seal;
 use crate::sig::PublicKey;
-use crate::verify::{verify_session, Keyring, SessionChain, SessionReport, Status, Verdict};
+use crate::verify::{
+    grade_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore, Keyring, SessionChain, SessionReport,
+    Status, Verdict,
+};
 
 pub const BUNDLE_VERSION: &str = "docket-bundle/0.1";
 pub const CHAIN_FORMAT: &str = "v1";
@@ -29,6 +34,18 @@ pub const CHAIN_FORMAT: &str = "v1";
 pub struct ManifestSession {
     pub session_id: String,
     /// Relative path to the session JSON.
+    pub path: String,
+}
+
+/// One carried artifact body: the exact bytes whose SHA-256 an entry's
+/// `artifact_hash` commits to, stored verbatim in a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestArtifact {
+    /// The `artifact_hash` this body claims to be the preimage of. A claim:
+    /// the verifier recomputes SHA-256 over the file bytes and grades a
+    /// mismatch FAILED (`artifact_binding`).
+    pub artifact_hash: String,
+    /// Relative path to the raw body bytes.
     pub path: String,
 }
 
@@ -51,6 +68,11 @@ pub struct Manifest {
     /// Relative path to the seal JSON.
     #[serde(default)]
     pub seal: Option<String>,
+    /// Artifact bodies carried in this bundle (exporter `--artifacts`).
+    /// Absent in hash-only bundles; when absent, no `artifact_binding` is
+    /// graded and nothing in the report implies bodies exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<Vec<ManifestArtifact>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,16 +94,35 @@ pub struct KeyFile {
 /// outcome; they mean the verifier never got to look.
 #[derive(Debug)]
 pub enum BundleError {
-    Io { path: PathBuf, source: std::io::Error },
-    Json { path: PathBuf, source: serde_json::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     UnsupportedVersion(String),
     UnsupportedChainFormat(String),
     UnsafePath(String),
-    KeyIdMismatch { claimed: String, derived: String },
+    KeyIdMismatch {
+        claimed: String,
+        derived: String,
+    },
     UnsupportedKeyAlgorithm(String),
     InvalidKey(String),
-    SessionIdMismatch { manifest: String, file: String },
+    SessionIdMismatch {
+        manifest: String,
+        file: String,
+    },
     Seal(crate::seal::SealError),
+    /// A manifest `artifacts[].artifact_hash` label is not a 64-hex digest.
+    MalformedArtifactHash(String),
+    /// Two manifest artifact rows claim the same `artifact_hash`.
+    DuplicateArtifact(String),
+    /// A carried body is referenced by no entry in the bundle: content
+    /// nothing in the evidence commits to. Strict reading rejects it.
+    UnreferencedArtifact(String),
 }
 
 impl std::fmt::Display for BundleError {
@@ -104,6 +145,21 @@ impl std::fmt::Display for BundleError {
                 write!(f, "manifest names session {manifest:?} but the file says {file:?}")
             }
             Self::Seal(e) => write!(f, "seal: {e}"),
+            Self::MalformedArtifactHash(h) => {
+                write!(
+                    f,
+                    "manifest artifacts entry claims artifact_hash {h:?}, which is not a 64-hex digest"
+                )
+            }
+            Self::DuplicateArtifact(h) => {
+                write!(f, "manifest lists more than one artifact body for artifact_hash {h}")
+            }
+            Self::UnreferencedArtifact(h) => {
+                write!(
+                    f,
+                    "carried artifact body {h} is referenced by no entry in the bundle (unattested content)"
+                )
+            }
         }
     }
 }
@@ -118,6 +174,9 @@ pub struct Bundle {
     pub keyring: Keyring,
     pub sessions: Vec<SessionChain>,
     pub seal: Option<Seal>,
+    /// Carried artifact bodies keyed by claimed `artifact_hash`. `None` for
+    /// a hash-only bundle (no `artifacts` key in the manifest).
+    pub artifacts: Option<ArtifactStore>,
 }
 
 fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, BundleError> {
@@ -193,12 +252,46 @@ impl Bundle {
             }
         };
 
+        // Carried artifact bodies: read the raw bytes verbatim. Structural
+        // strictness only (hex label, no duplicates, no unreferenced body);
+        // whether a body actually hashes to its label is verify()'s call —
+        // a mislabelled body is graded FAILED, not "unreadable".
+        let artifacts = match &manifest.artifacts {
+            None => None,
+            Some(list) => {
+                let mut store = ArtifactStore::new();
+                for ma in list {
+                    if !is_hex_digest_64(&ma.artifact_hash) {
+                        return Err(BundleError::MalformedArtifactHash(ma.artifact_hash.clone()));
+                    }
+                    let path = safe_join(root, &ma.path)?;
+                    let bytes = std::fs::read(&path).map_err(|source| BundleError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                    if store.insert(ma.artifact_hash.clone(), bytes).is_some() {
+                        return Err(BundleError::DuplicateArtifact(ma.artifact_hash.clone()));
+                    }
+                }
+                for hash in store.keys() {
+                    let referenced = sessions
+                        .iter()
+                        .any(|c| c.entries.iter().any(|e| &e.fields.artifact_hash == hash));
+                    if !referenced {
+                        return Err(BundleError::UnreferencedArtifact(hash.clone()));
+                    }
+                }
+                Some(store)
+            }
+        };
+
         Ok(Bundle {
             root: root.to_owned(),
             manifest,
             keyring,
             sessions,
             seal,
+            artifacts,
         })
     }
 
@@ -226,7 +319,19 @@ impl Bundle {
                     }
                 }
             };
-            sessions.push(SessionOutcome { report, seal_anchor });
+            let (artifact_binding, artifact_coverage) = match &self.artifacts {
+                None => (None, None),
+                Some(store) => {
+                    let (status, coverage) = grade_artifact_binding(chain, store);
+                    (Some(status), Some(coverage))
+                }
+            };
+            sessions.push(SessionOutcome {
+                report,
+                seal_anchor,
+                artifact_binding,
+                artifact_coverage,
+            });
         }
 
         let seal = self.seal.as_ref().map(|s| SealOutcome {
@@ -258,6 +363,13 @@ pub struct SessionOutcome {
     /// Present only when the bundle carries a seal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal_anchor: Option<Status>,
+    /// Present only when the bundle carries artifact bodies: whether every
+    /// carried body hashes to the `artifact_hash` its entries commit to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_binding: Option<Status>,
+    /// Present alongside `artifact_binding`: per-entry body coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_coverage: Option<ArtifactCoverage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,17 +397,20 @@ pub struct BundleReport {
     pub verdict: Verdict,
 }
 
-/// Weakest-link: any failure (including a failed seal anchor or an
-/// inconsistent seal) is FAILED; otherwise the least-authenticated session
-/// verdict. An empty bundle has nothing verified and is FAILED.
+/// Weakest-link: any failure (including a failed seal anchor, a failed
+/// artifact binding or an inconsistent seal) is FAILED; otherwise the
+/// least-authenticated session verdict. An empty bundle has nothing
+/// verified and is FAILED.
 fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> Verdict {
     if sessions.is_empty() {
         return Verdict::Failed;
     }
     let seal_failed = seal.is_some_and(|s| s.consistency.is_failed());
-    let any_failed = sessions
-        .iter()
-        .any(|s| s.report.verdict == Verdict::Failed || s.seal_anchor.as_ref().is_some_and(Status::is_failed));
+    let any_failed = sessions.iter().any(|s| {
+        s.report.verdict == Verdict::Failed
+            || s.seal_anchor.as_ref().is_some_and(Status::is_failed)
+            || s.artifact_binding.as_ref().is_some_and(Status::is_failed)
+    });
     if any_failed || seal_failed {
         return Verdict::Failed;
     }

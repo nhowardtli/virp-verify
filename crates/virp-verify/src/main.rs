@@ -155,6 +155,14 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -
             };
             out.push_str(&status_line("seal_anchor", anchor, &detail));
         }
+        if let Some(binding) = &s.artifact_binding {
+            let detail = s
+                .artifact_coverage
+                .as_ref()
+                .map(docket_bundle::ArtifactCoverage::detail)
+                .unwrap_or_default();
+            out.push_str(&status_line("artifact_binding", binding, &detail));
+        }
         let _ = writeln!(out, "  verdict: {}", r.verdict.label());
         let _ = writeln!(out);
     }
@@ -189,10 +197,13 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -
     );
     let _ = writeln!(out, "  ABSENT              the property is not present in the evidence");
     let _ = writeln!(out, "  FAILED              checked and wrong");
-    let _ = writeln!(out, "Not checked by this tool: artifact-body binding, the seal's minisign signature, the seal's OpenTimestamps proof,");
     let _ = writeln!(
         out,
-        "  milestones (unsigned in D-1), and anything before the chain's capture boundary."
+        "Not checked by this tool: the seal's minisign signature, the seal's OpenTimestamps proof,"
+    );
+    let _ = writeln!(
+        out,
+        "  milestones (unsigned in D-1), artifact bodies the bundle does not carry, and anything before the chain's capture boundary."
     );
     let _ = writeln!(out, "bundle root: {}", bundle.root.display());
     out

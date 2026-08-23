@@ -141,6 +141,34 @@ fn tampered_field_fails_hash_exit_1() {
 }
 
 #[test]
+fn json_failed_property_names_failure_without_key_collision() {
+    let dir = variant(
+        "tamper-field-json",
+        "sessions/inv-lock-1.json",
+        "\"artifact_id\": \"obs:inv-lock:0001\"",
+        "\"artifact_id\": \"obs:inv-lock:0002\"",
+    );
+    let (code, out, _) = run(&["--json", dir.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let props = v["sessions"][0]["properties"].as_array().unwrap();
+    let p = props.iter().find(|p| p["name"] == "entry_hashes").unwrap();
+    assert_eq!(p["status"], "failed");
+    // The failure text has its own key; a JSON parser keeps BOTH it and the
+    // generic detail (the old duplicate-"detail" collision dropped this).
+    assert!(
+        p["failure"]
+            .as_str()
+            .is_some_and(|d| d.contains("entry hash mismatch at sequence 0")),
+        "{out}"
+    );
+    assert!(
+        p["detail"].as_str().is_some_and(|d| d.contains("entries recomputed")),
+        "{out}"
+    );
+}
+
+#[test]
 fn stripped_entry_signature_fails_even_keyless_exit_1() {
     // Remove the entry's signature object but leave the signed head: the
     // session-granularity rule catches it with or without the key.

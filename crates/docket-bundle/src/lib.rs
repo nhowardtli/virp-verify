@@ -22,8 +22,8 @@ pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{
-    verify_session, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, SessionChain, SessionReport,
-    Status, Verdict,
+    grade_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore, ChainEntry, ChainHead, DetachedSignature,
+    Keyring, PropertyReport, SessionChain, SessionReport, Status, Verdict,
 };
 
 /// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).

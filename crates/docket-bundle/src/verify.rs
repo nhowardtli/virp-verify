@@ -137,7 +137,14 @@ pub enum Status {
     /// pre-D-1 session has no signatures). Neutral.
     Absent,
     /// Checked and wrong. Tampering or corruption.
-    Failed { detail: String },
+    ///
+    /// Serialized as `failure`, not `detail`: `PropertyReport` flattens this
+    /// enum next to its own generic `detail` field, and two `detail` keys in
+    /// one JSON object made parsers silently drop the failure text.
+    Failed {
+        #[serde(rename = "failure")]
+        detail: String,
+    },
 }
 
 impl Status {
@@ -252,6 +259,102 @@ impl SessionReport {
     pub fn status(&self, name: &str) -> Option<&Status> {
         self.property(name).map(|p| &p.status)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Artifact-body binding (graded only when a bundle carries bodies)
+// ---------------------------------------------------------------------------
+
+/// Bodies carried alongside a chain, keyed by the `artifact_hash` they claim
+/// to be the preimage of. The key is a CLAIM: [`grade_artifact_binding`]
+/// recomputes SHA-256 over the bytes and compares against each referencing
+/// entry's stored `artifact_hash`, so a mislabelled body fails rather than
+/// passes.
+pub type ArtifactStore = BTreeMap<String, Vec<u8>>;
+
+/// Per-entry coverage of carried artifact bodies for one session. Honest by
+/// construction: every entry is either counted in `entries_with_body` or
+/// listed in `hash_only_sequences` — a body is never implied where none is
+/// carried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactCoverage {
+    pub entry_count: usize,
+    pub entries_with_body: usize,
+    /// Sequences of entries with NO carried body (hash-only evidence).
+    pub hash_only_sequences: Vec<i64>,
+}
+
+impl ArtifactCoverage {
+    /// Human-readable coverage line for reports. The full sequence list
+    /// lives in the JSON; text output elides after 16.
+    pub fn detail(&self) -> String {
+        let mut s = format!(
+            "{}/{} entries have carried bodies (SHA-256 recomputed against artifact_hash)",
+            self.entries_with_body, self.entry_count
+        );
+        if !self.hash_only_sequences.is_empty() {
+            let shown: Vec<String> = self.hash_only_sequences.iter().take(16).map(i64::to_string).collect();
+            let more = self.hash_only_sequences.len().saturating_sub(16);
+            s.push_str("; hash-only sequences: ");
+            s.push_str(&shown.join(", "));
+            if more > 0 {
+                s.push_str(&format!(" (+{more} more)"));
+            }
+        }
+        s
+    }
+}
+
+/// Grade artifact-body binding for one session against carried bodies.
+///
+/// Keyless tier: for every entry whose `artifact_hash` has a carried body,
+/// recompute `sha256(body)` and compare. A mismatch is FAILED (the body is
+/// not the one the signed entry commits to). Entries with no carried body
+/// are reported hash-only — never failed, never implied present. A body
+/// under an `artifact_hash_alg` other than sha256 is UNVERIFIABLE.
+pub fn grade_artifact_binding(chain: &SessionChain, store: &ArtifactStore) -> (Status, ArtifactCoverage) {
+    let mut hash_only_sequences = Vec::new();
+    let mut entries_with_body = 0usize;
+    let mut failed: Option<String> = None;
+    let mut unverifiable: Option<String> = None;
+    for e in &chain.entries {
+        match store.get(&e.fields.artifact_hash) {
+            None => hash_only_sequences.push(e.fields.sequence),
+            Some(bytes) => {
+                entries_with_body += 1;
+                if e.fields.artifact_hash_alg != "sha256" {
+                    unverifiable.get_or_insert_with(|| {
+                        format!(
+                            "entry at sequence {} declares artifact_hash_alg {:?}, which this verifier cannot recompute",
+                            e.fields.sequence, e.fields.artifact_hash_alg
+                        )
+                    });
+                } else if crate::hash::sha256_hex(bytes) != e.fields.artifact_hash {
+                    failed.get_or_insert_with(|| {
+                        format!(
+                            "carried body for sequence {} does not hash to its artifact_hash",
+                            e.fields.sequence
+                        )
+                    });
+                }
+            }
+        }
+    }
+    let status = if let Some(detail) = failed {
+        Status::Failed { detail }
+    } else if let Some(reason) = unverifiable {
+        Status::Unverifiable { reason }
+    } else if entries_with_body > 0 {
+        Status::Verified
+    } else {
+        Status::Absent
+    };
+    let coverage = ArtifactCoverage {
+        entry_count: chain.entries.len(),
+        entries_with_body,
+        hash_only_sequences,
+    };
+    (status, coverage)
 }
 
 // ---------------------------------------------------------------------------

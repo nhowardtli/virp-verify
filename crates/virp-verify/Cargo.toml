@@ -1,0 +1,17 @@
+[package]
+name = "virp-verify"
+description = "Standalone VIRP chain verifier. Reads a Docket evidence bundle, recomputes hashes, links and detached Ed25519 signatures, and reports which properties hold."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "virp-verify"
+path = "src/main.rs"
+
+[dependencies]
+docket-bundle = { path = "../docket-bundle" }
+
+[lints]
+workspace = true

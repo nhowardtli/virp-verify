@@ -1,0 +1,17 @@
+[package]
+name = "docket-bundle"
+description = "Docket evidence-bundle library: VIRP canonical bytes, hashing, detached-signature verification, bundle reading. Never signs, never executes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sha2.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

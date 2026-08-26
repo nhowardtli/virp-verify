@@ -15,6 +15,7 @@
 //! file whose `session_id` disagrees with the manifest are all hard errors —
 //! a bundle that cannot be read is never reported as anything but unreadable.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,12 @@ pub enum BundleError {
         what: &'static str,
         max: usize,
     },
+    /// Two manifest rows name the same session, or two loaded session files
+    /// carry the same `session_id`. One session presented twice inflates
+    /// every count in the report.
+    DuplicateSession(String),
+    /// Two manifest rows name the same session file.
+    DuplicateSessionPath(String),
     /// A path inside the bundle is, or passes through, a symlink. A bundle
     /// is a self-contained directory; a symlink in one can leave it.
     SymlinkInBundle {
@@ -192,6 +199,13 @@ impl std::fmt::Display for BundleError {
                 write!(f, "{}: {what} exceeds the {max}-byte limit", path.display())
             }
             Self::TooMany { what, max } => write!(f, "bundle exceeds the limit of {max} {what}"),
+            Self::DuplicateSession(id) => write!(
+                f,
+                "session {id:?} appears more than once; one session presented twice is two sessions in every count the report prints"
+            ),
+            Self::DuplicateSessionPath(p) => {
+                write!(f, "manifest lists the session file {p:?} more than once")
+            }
             Self::SymlinkInBundle {
                 manifest_path,
                 component,
@@ -432,8 +446,31 @@ impl Bundle {
             }
         }
 
+        // Uniqueness on all three axes a bundle can duplicate: the manifest's
+        // session ids, the manifest's paths, and the identity each loaded file
+        // claims for itself. Verification stays cryptographically correct on
+        // every copy — that is exactly what makes this worth rejecting, since
+        // an inflated report is one where every session says VERIFIED.
+        //
+        // Paths are compared as component sequences rather than as strings, so
+        // two spellings of one path cannot slip past by differing in
+        // separators. safe_join has already established that every component
+        // is a plain name.
+        let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
+        let mut seen_paths: BTreeSet<Vec<Component<'_>>> = BTreeSet::new();
+        for ms in &manifest.sessions {
+            if !seen_ids.insert(ms.session_id.as_str()) {
+                return Err(BundleError::DuplicateSession(ms.session_id.clone()));
+            }
+            let components: Vec<Component<'_>> = Path::new(ms.path.as_str()).components().collect();
+            if !seen_paths.insert(components) {
+                return Err(BundleError::DuplicateSessionPath(ms.path.clone()));
+            }
+        }
+
         let mut sessions = Vec::with_capacity(manifest.sessions.len());
         let mut entries_total = 0usize;
+        let mut loaded_ids: BTreeSet<String> = BTreeSet::new();
         for ms in &manifest.sessions {
             let chain: SessionChain = read_json(&safe_join(root, &ms.path)?, limits.session_bytes, "session file")?;
             if chain.session_id != ms.session_id {
@@ -456,6 +493,13 @@ impl Bundle {
                 });
             }
             check_entry_field_lengths(&chain, limits)?;
+            // Third axis: identity as the FILE states it. Redundant with the
+            // manifest check only while the manifest/file agreement check
+            // above holds; asserted separately so that neither check silently
+            // becomes the only one.
+            if !loaded_ids.insert(chain.session_id.clone()) {
+                return Err(BundleError::DuplicateSession(chain.session_id));
+            }
             sessions.push(chain);
         }
 

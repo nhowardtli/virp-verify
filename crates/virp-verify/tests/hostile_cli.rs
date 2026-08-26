@@ -492,3 +492,113 @@ fn an_ordinary_bundle_of_plain_files_still_reads() {
     r.never_crashed("plain files");
     assert_eq!(r.code, 4, "{}\n{}", r.out, r.err);
 }
+
+// ---------------------------------------------------------------------------
+// Finding 9 — duplicate sessions
+// ---------------------------------------------------------------------------
+
+/// One session, six times, every copy green, exit 0. Verification stayed
+/// cryptographically correct per copy — which is the whole problem: the
+/// report was six sessions of sound evidence describing one session's worth
+/// of facts.
+#[test]
+fn one_session_presented_six_times_is_unreadable() {
+    let root = scratch("dup-six");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 2, 0));
+    let mut rows = Vec::new();
+    for i in 0..6 {
+        let path = format!("sessions/copy{i}.json");
+        write_json(&root.join(&path), &session_json("s", 2, 0));
+        rows.push(json!({"session_id": "s", "path": path}));
+    }
+    write_json(&root.join("manifest.json"), &manifest(rows));
+
+    let r = run(&root, &[]);
+    r.never_crashed("six copies");
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(
+        r.err.contains("\"s\""),
+        "the message must name the duplicate: {}",
+        r.err
+    );
+    assert!(!r.out.contains("CRYPTOGRAPHICALLY-VERIFIED"), "{}", r.out);
+
+    // And the count it would have inflated is gone from the JSON path too.
+    let r = run(&root, &["--json"]);
+    r.never_crashed("six copies --json");
+    assert_eq!(r.code, 2);
+}
+
+/// Axis 2: the same file listed twice. The ids are equal here, so this also
+/// trips axis 1 — the assertion is that it is refused, not which check fires.
+#[test]
+fn the_same_session_path_listed_twice_is_unreadable() {
+    let root = scratch("dup-path");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 1, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![
+            json!({"session_id": "s", "path": "sessions/s.json"}),
+            json!({"session_id": "s", "path": "sessions/s.json"}),
+        ]),
+    );
+    let r = run(&root, &[]);
+    r.never_crashed("duplicate path");
+    assert_eq!(r.code, 2, "{}", r.out);
+}
+
+/// Axis 2 on its own: distinct ids, one file. Neither the id check nor the
+/// file-identity check can catch this — only comparing paths does.
+#[test]
+fn two_ids_pointing_at_one_file_is_unreadable() {
+    let root = scratch("dup-alias");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 1, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![
+            json!({"session_id": "s", "path": "sessions/s.json"}),
+            json!({"session_id": "other", "path": "sessions/s.json"}),
+        ]),
+    );
+    let r = run(&root, &[]);
+    r.never_crashed("aliased path");
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.err.contains("more than once"), "{}", r.err);
+}
+
+/// Path comparison is on components, so a different spelling of the same
+/// path does not slip through.
+#[test]
+fn a_respelled_duplicate_path_is_still_a_duplicate() {
+    let root = scratch("dup-spelling");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 1, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![
+            json!({"session_id": "s", "path": "sessions/s.json"}),
+            json!({"session_id": "other", "path": "sessions//s.json"}),
+        ]),
+    );
+    let r = run(&root, &[]);
+    r.never_crashed("respelled path");
+    assert_eq!(r.code, 2, "{}\n{}", r.out, r.err);
+}
+
+/// Genuinely distinct sessions are untouched — the reason a bundle exists is
+/// to carry more than one.
+#[test]
+fn distinct_sessions_still_read() {
+    let root = scratch("dup-none");
+    let mut rows = Vec::new();
+    for i in 0..4 {
+        let sid = format!("s{i}");
+        let path = format!("sessions/{sid}.json");
+        write_json(&root.join(&path), &session_json(&sid, 2, 0));
+        rows.push(json!({"session_id": sid, "path": path}));
+    }
+    write_json(&root.join("manifest.json"), &manifest(rows));
+    let r = run(&root, &[]);
+    r.never_crashed("four distinct");
+    assert_eq!(r.code, 4, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.matches("\nsession s").count(), 4, "{}", r.out);
+}

@@ -652,11 +652,26 @@ impl Bundle {
                         return Err(BundleError::DuplicateArtifact(ma.artifact_hash.clone()));
                     }
                 }
+                // Index the entries' hashes once, then look each body up.
+                //
+                // This was a nested scan: for every carried body, walk every
+                // entry of every session. O(bodies x entries), and measurably
+                // so — 1,000 bodies took 0.01 s, 16,000 took 0.92 s, and
+                // 32,000 took 7.52 s, roughly 8x per doubling. The same 32,000
+                // entries with no artifacts section took 0.12 s, so the nested
+                // scan was ~60x the rest of the read. Extrapolated, a manifest
+                // of a few tens of MB with 1-byte bodies buys an hour of CPU.
+                //
+                // A size ceiling does not fix an algorithm: `Limits` allows
+                // 200,000 bodies, which under the old scan would have run for
+                // hours while staying comfortably inside every limit. Hence
+                // the index rather than a tighter cap.
+                let referenced: BTreeSet<&str> = sessions
+                    .iter()
+                    .flat_map(|c| c.entries.iter().map(|e| e.fields.artifact_hash.as_str()))
+                    .collect();
                 for hash in store.keys() {
-                    let referenced = sessions
-                        .iter()
-                        .any(|c| c.entries.iter().any(|e| &e.fields.artifact_hash == hash));
-                    if !referenced {
+                    if !referenced.contains(hash.as_str()) {
                         return Err(BundleError::UnreferencedArtifact(hash.clone()));
                     }
                 }

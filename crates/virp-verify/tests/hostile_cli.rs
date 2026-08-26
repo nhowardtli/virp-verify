@@ -712,3 +712,86 @@ fn the_character_set_real_evidence_uses_is_untouched() {
     r.never_crashed("real characters");
     assert_ne!(r.code, 2, "real-world values were refused\n{}", r.err);
 }
+
+// ---------------------------------------------------------------------------
+// The unreferenced-artifact scan: same answers, different complexity
+// ---------------------------------------------------------------------------
+
+/// Replacing the nested scan with an index must not change a single verdict.
+/// These are the behaviours it decided before and must still decide.
+#[test]
+fn artifact_reference_checking_is_unchanged_by_the_index() {
+    // (a) every carried body referenced by an entry: reads and binds.
+    let root = scratch("art-ok");
+    let session = session_json("s", 3, 0);
+    let hashes: Vec<String> = (0..3)
+        .map(|i| session["entries"][i]["artifact_hash"].as_str().unwrap().to_owned())
+        .collect();
+    write_json(&root.join("sessions/s.json"), &session);
+    let mut rows = Vec::new();
+    for (i, h) in hashes.iter().enumerate() {
+        std::fs::create_dir_all(root.join("artifacts")).unwrap();
+        std::fs::write(root.join("artifacts").join(h), format!("body-{i}")).unwrap();
+        rows.push(json!({"artifact_hash": h, "path": format!("artifacts/{h}")}));
+    }
+    let mut m = manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]);
+    m["artifacts"] = json!(rows);
+    write_json(&root.join("manifest.json"), &m);
+
+    let r = run(&root, &[]);
+    r.never_crashed("all referenced");
+    assert_eq!(r.code, 4, "{}\n{}", r.out, r.err);
+    assert!(r.out.contains("artifact_binding       VERIFIED"), "{}", r.out);
+    assert!(r.out.contains("3/3 entries have carried bodies"), "{}", r.out);
+
+    // (b) a body no entry commits to is still unreadable.
+    let orphan = docket_bundle::sha256_hex(b"nobody-commits-to-this");
+    std::fs::write(root.join("artifacts").join(&orphan), b"nobody-commits-to-this").unwrap();
+    let mut rows2 = rows.clone();
+    rows2.push(json!({"artifact_hash": orphan, "path": format!("artifacts/{orphan}")}));
+    let mut m2 = manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]);
+    m2["artifacts"] = json!(rows2);
+    write_json(&root.join("manifest.json"), &m2);
+
+    let r = run(&root, &[]);
+    r.never_crashed("orphan body");
+    assert_eq!(r.code, 2, "an unattested body was accepted\n{}", r.out);
+    assert!(r.err.contains("referenced by no entry"), "{}", r.err);
+    assert!(r.err.contains(&orphan), "the message must name it: {}", r.err);
+}
+
+/// A body referenced by a session OTHER than the first: the index is built
+/// across every session, so a nested-scan-to-index rewrite that only indexed
+/// `sessions[0]` would pass the test above and fail this one.
+#[test]
+fn a_body_referenced_by_a_later_session_is_still_referenced() {
+    let root = scratch("art-multi");
+    std::fs::create_dir_all(root.join("artifacts")).unwrap();
+    let mut rows = Vec::new();
+    let mut session_rows = Vec::new();
+    for s in 0..3 {
+        let sid = format!("s{s}");
+        let session = session_json(&sid, 2, 0);
+        write_json(&root.join(format!("sessions/{sid}.json")), &session);
+        session_rows.push(json!({"session_id": sid, "path": format!("sessions/{sid}.json")}));
+        if s == 2 {
+            // Only the LAST session's bodies are carried.
+            for i in 0..2 {
+                let h = session["entries"][i]["artifact_hash"].as_str().unwrap().to_owned();
+                std::fs::write(root.join("artifacts").join(&h), format!("body-{i}")).unwrap();
+                rows.push(json!({"artifact_hash": h, "path": format!("artifacts/{h}")}));
+            }
+        }
+    }
+    let mut m = manifest(session_rows);
+    m["artifacts"] = json!(rows);
+    write_json(&root.join("manifest.json"), &m);
+
+    let r = run(&root, &[]);
+    r.never_crashed("body from a later session");
+    assert_eq!(
+        r.code, 4,
+        "a body referenced by session 2 was called unreferenced\n{}",
+        r.err
+    );
+}

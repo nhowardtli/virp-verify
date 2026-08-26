@@ -58,6 +58,12 @@ pub const SEAL_VERSION: &str = "virp-seal/1";
 pub enum SealError {
     Json(serde_json::Error),
     WrongVersion(String),
+    /// A listed session is structurally unusable: the reader cannot compare
+    /// it against anything, so the seal is unreadable rather than wrong.
+    MalformedSession {
+        session_id: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for SealError {
@@ -65,6 +71,9 @@ impl std::fmt::Display for SealError {
         match self {
             Self::Json(e) => write!(f, "seal is not valid JSON: {e}"),
             Self::WrongVersion(v) => write!(f, "seal_version {v:?} is not {SEAL_VERSION}"),
+            Self::MalformedSession { session_id, detail } => {
+                write!(f, "seal session {session_id:?}: {detail}")
+            }
         }
     }
 }
@@ -77,7 +86,37 @@ impl Seal {
         if seal.seal_version != SEAL_VERSION {
             return Err(SealError::WrongVersion(seal.seal_version));
         }
+        seal.validate()?;
         Ok(seal)
+    }
+
+    /// Structural validation of every listed session, run before any of them
+    /// is used as an anchor.
+    ///
+    /// This is deliberately NOT [`Seal::consistency`]. Consistency asks
+    /// whether the seal's own Merkle root holds — a question that is
+    /// *checked and can be wrong*, so it grades FAILED. This asks whether
+    /// the seal's fields can be read at all. A `head_hash` that is not a
+    /// 64-hex digest is not a wrong answer, it is a document the verifier
+    /// cannot interpret, and the honest outcome is UNREADABLE.
+    ///
+    /// Anchoring reads `head_hash` and compares `entry_count`; both must be
+    /// usable for every listed session before any session is anchored,
+    /// because a bundle names which sessions it wants anchored and an
+    /// attacker chooses which ones the seal lists.
+    pub fn validate(&self) -> Result<(), SealError> {
+        for s in &self.sessions {
+            if !is_hex_digest_64(&s.head_hash) {
+                return Err(SealError::MalformedSession {
+                    session_id: s.session_id.clone(),
+                    detail: format!(
+                        "head_hash is not a 64-character lowercase hex digest (got {} characters)",
+                        s.head_hash.chars().count()
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn session(&self, session_id: &str) -> Option<&SealSession> {
@@ -169,11 +208,27 @@ impl Seal {
     ///
     /// `last_sequence`/`last_entry_hash` must already have been verified by
     /// the chain walk; this only asks whether the seal attests the same head.
+    /// Note on totality: this is `pub`, so it must be safe on values that
+    /// never went through [`Seal::validate`] or [`Seal::from_slice`]. It
+    /// slices no string and adds no integer without checking first. Fixing
+    /// only the call order inside `Bundle::verify` would leave every other
+    /// consumer of this crate holding the panic.
     pub fn anchor(&self, session_id: &str, last_sequence: i64, last_entry_hash: &str) -> Status {
         match self.session(session_id) {
             None => Status::Absent,
             Some(s) => {
-                let bundle_count = u64::try_from(last_sequence + 1).unwrap_or(0);
+                // The bundle's entry count is `last_sequence + 1`. A sequence
+                // that cannot be incremented, or whose successor is not a
+                // valid unsigned count, is not a head this seal can be asked
+                // about. Saying so is the only honest option: the previous
+                // `unwrap_or(0)` turned an unrepresentable count into the
+                // very specific claim "0 entries", which is a false statement
+                // about the evidence rather than a refusal to make one.
+                let Some(bundle_count) = last_sequence.checked_add(1).and_then(|n| u64::try_from(n).ok()) else {
+                    return Status::unverifiable(format!(
+                        "bundle head claims last_sequence {last_sequence}, which is not a usable entry count; not anchoring"
+                    ));
+                };
                 if s.head_hash == last_entry_hash && s.entry_count == bundle_count {
                     Status::Verified
                 } else if s.entry_count < bundle_count && s.in_flight {
@@ -182,7 +237,7 @@ impl Seal {
                     Status::unverifiable(format!(
                         "seal attests {} entries (head {}) for an in-flight session; bundle has {} — seal covers a prefix only",
                         s.entry_count,
-                        &s.head_hash[..16],
+                        digest_prefix(&s.head_hash),
                         bundle_count
                     ))
                 } else {
@@ -193,5 +248,19 @@ impl Seal {
                 }
             }
         }
+    }
+}
+
+/// The leading 16 characters of a digest, for a report line.
+///
+/// A seal is supplied by whoever produced the bundle, so `head_hash` is not
+/// guaranteed to be 64 hex characters — or even 16 bytes long, or to have a
+/// character boundary at byte 16. [`Seal::validate`] rejects such a seal at
+/// read time, but this function is on the path of a `pub` method that may be
+/// called on an unvalidated `Seal`, so it must not assume that gate ran.
+fn digest_prefix(h: &str) -> &str {
+    match h.char_indices().nth(16) {
+        Some((byte_idx, _)) => &h[..byte_idx],
+        None => h,
     }
 }

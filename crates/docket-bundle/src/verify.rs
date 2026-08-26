@@ -5,7 +5,7 @@
 //! | tier | Docket needs | what it proves |
 //! | --- | --- | --- |
 //! | keyless | nothing | hash + genesis + prev-link + contiguity + head commitment. The head's length claim is **unauthenticated**. |
-//! | symmetric (note only) | `K_chain` — which Docket **never holds** | Docket cannot check `chain_hmac`/`head_hmac`. Their presence is reported as *operator-attested, unverifiable by this verifier*. Never a pass. |
+//! | symmetric (note only) | `K_chain` — which Docket **never holds** | Docket cannot check `chain_hmac`/`head_hmac`. FULL presence is reported as *operator-attested, unverifiable by this verifier*; never a pass. PARTIAL presence is FAILED — see the symmetric-tier block in [`verify_session`]. |
 //! | asymmetric | the signer's PUBLIC key | Ed25519 over the head and every entry, under the session-granularity key rule. |
 //!
 //! The vocabulary is deliberately incapable of collapsing these into one
@@ -541,6 +541,25 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     // --- symmetric tier: NOTE ONLY ----------------------------------------
     // Docket does not hold K_chain. These are graded present/absent and, when
     // present, reported as operator-attested. Never Verified.
+    //
+    // Coverage is all-or-nothing. A session that carries an HMAC on some
+    // entries but not others is NOT operator-attested: the operator attested
+    // to the ones that are there and to nothing else, and reporting that with
+    // the same status as full coverage is a verdict overstating its evidence.
+    //
+    // Partial coverage is FAILED rather than a softer status for the same
+    // reason a stripped entry signature is (see `SessionKeyError`): the
+    // symmetric columns sit OUTSIDE the canonical bytes, so the HMAC is their
+    // only integrity protection and its removal leaves no other trace. The
+    // producer emits one on every entry or on none — `chain_hmac` is NOT NULL
+    // in the chain schema, and the exporter copies the column verbatim — so a
+    // partial session is not a shape an honest producer makes.
+    //
+    // OPEN, deliberately not changed here: 0-of-n entries while the head DOES
+    // carry a head_hmac. The same all-or-nothing logic says total stripping
+    // under a present head HMAC should also fail, but that would re-grade a
+    // case currently reported ABSENT and no real bundle in that shape exists
+    // to test against. See SESSION-SUMMARY.md.
     {
         let with = chain.entries.iter().filter(|e| e.chain_hmac.is_some()).count();
         let malformed = chain
@@ -552,6 +571,13 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
             Status::failed(format!("{malformed} chain_hmac values are not 64-hex digests"))
         } else if with == 0 {
             Status::Absent
+        } else if with < n {
+            Status::failed(format!(
+                "chain_hmac is carried on {with} of {n} entries; {} have none. The symmetric tier is \
+                 all-or-nothing — a session carries an HMAC on every entry or on none — and chain_hmac \
+                 sits outside the canonical bytes, so nothing else would detect its removal",
+                n - with
+            ))
         } else {
             Status::OperatorAttested
         };

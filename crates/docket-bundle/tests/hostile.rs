@@ -242,3 +242,128 @@ fn extreme_entry_counts_are_graded_not_fatal() {
         let _ = text(&status);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Finding 5 — partial HMAC coverage must not report as full
+// ---------------------------------------------------------------------------
+
+mod hmac {
+    use docket_bundle::{genesis_hash_hex, sha256_hex, verify_session, ChainEntry, ChainHead};
+    use docket_bundle::{EntryFields, HeadFields, Keyring, SessionChain, Status, Verdict};
+
+    /// A keyless session of `n` entries; `hmac_on(i)` decides which entries
+    /// carry a `chain_hmac`. Everything else about the chain is correct, so
+    /// the only thing under test is coverage.
+    fn chain(n: usize, hmac_on: impl Fn(usize) -> bool) -> SessionChain {
+        let session_id = "s".to_owned();
+        let mut prev = genesis_hash_hex(&session_id);
+        let mut entries = Vec::new();
+        for i in 0..n {
+            let fields = EntryFields {
+                artifact_hash: sha256_hex(format!("body-{i}").as_bytes()),
+                artifact_hash_alg: "sha256".to_owned(),
+                artifact_id: format!("obs:{i}"),
+                artifact_schema_version: "1".to_owned(),
+                artifact_type: "observation".to_owned(),
+                monotonic_ns: 1_000 + i as u64,
+                previous_entry_hash: prev.clone(),
+                sequence: i as i64,
+                session_id: session_id.clone(),
+                signer_node_id: 13,
+                signer_org_id: "local".to_owned(),
+                timestamp_ns: 1_787_000_000_000_000_000 + i as u64,
+            };
+            let hash = sha256_hex(&fields.canonical_bytes());
+            entries.push(ChainEntry {
+                fields,
+                chain_entry_hash: hash.clone(),
+                canonical_utf8: None,
+                chain_hmac: hmac_on(i).then(|| super::hex64('b')),
+                signature: None,
+            });
+            prev = hash;
+        }
+        SessionChain {
+            head: Some(ChainHead {
+                fields: HeadFields {
+                    session_id: session_id.clone(),
+                    last_sequence: n as i64 - 1,
+                    last_entry_hash: prev,
+                },
+                canonical_utf8: None,
+                head_hmac: None,
+                signature: None,
+            }),
+            session_id,
+            entries,
+        }
+    }
+
+    fn entry_hmacs(n: usize, hmac_on: impl Fn(usize) -> bool) -> (Status, Verdict) {
+        let report = verify_session(&chain(n, hmac_on), &Keyring::new());
+        let p = report.property("entry_hmacs").expect("entry_hmacs graded");
+        (p.status.clone(), report.verdict)
+    }
+
+    /// The overstatement, stated as a test: one HMAC out of a thousand used
+    /// to earn the same status and the same verdict as a thousand out of a
+    /// thousand. `chain_hmac` sits outside the canonical bytes, so the 999
+    /// removals leave no other trace — which is precisely why the verifier
+    /// must not wave them through.
+    #[test]
+    fn one_hmac_in_a_thousand_does_not_report_as_a_thousand() {
+        let (partial, partial_verdict) = entry_hmacs(1000, |i| i == 0);
+        let (full, full_verdict) = entry_hmacs(1000, |_| true);
+
+        assert!(full == Status::OperatorAttested, "full coverage: {full:?}");
+        assert_eq!(full_verdict, Verdict::OperatorAttestedUnverifiable);
+
+        assert!(partial.is_failed(), "partial coverage: {partial:?}");
+        assert_eq!(partial_verdict, Verdict::Failed);
+        assert_ne!(partial, full, "1/1000 and 1000/1000 grade identically");
+    }
+
+    /// Mirrors `stripped_entry_signature_fails_even_keyless_exit_1`: removing
+    /// the protection is what fails, at any scale, from either end.
+    #[test]
+    fn a_single_removed_hmac_fails_the_session() {
+        for (n, missing) in [(2usize, 0usize), (2, 1), (10, 4), (1000, 999), (3456, 0)] {
+            let (status, verdict) = entry_hmacs(n, |i| i != missing);
+            assert!(
+                status.is_failed(),
+                "n={n} missing={missing} graded {status:?}, not FAILED"
+            );
+            assert_eq!(verdict, Verdict::Failed, "n={n} missing={missing}");
+            if let Status::Failed { detail } = &status {
+                assert!(detail.contains(&format!("{} of {n}", n - 1)), "{detail}");
+            }
+        }
+    }
+
+    /// The two legitimate shapes are untouched. An un-HMAC'd session is a
+    /// real thing (pre-symmetric-tier chains) and must stay ABSENT, not
+    /// become a failure by way of this fix.
+    #[test]
+    fn all_or_nothing_are_both_still_legitimate() {
+        for n in [1usize, 2, 100, 1000] {
+            assert_eq!(entry_hmacs(n, |_| false).0, Status::Absent, "n={n} none");
+            assert_eq!(entry_hmacs(n, |_| true).0, Status::OperatorAttested, "n={n} all");
+        }
+        // Nothing at all attests an un-HMAC'd, unsigned session.
+        assert_eq!(entry_hmacs(10, |_| false).1, Verdict::ConsistentUnauthenticated);
+    }
+
+    /// A malformed HMAC still fails on its own terms, and does so even when
+    /// coverage is complete — the two checks are independent.
+    #[test]
+    fn malformed_hmacs_still_fail_independently_of_coverage() {
+        let mut c = chain(4, |_| true);
+        c.entries[2].chain_hmac = Some("not-a-digest".to_owned());
+        let report = verify_session(&c, &Keyring::new());
+        let status = &report.property("entry_hmacs").unwrap().status;
+        assert!(status.is_failed(), "{status:?}");
+        if let Status::Failed { detail } = status {
+            assert!(detail.contains("64-hex"), "{detail}");
+        }
+    }
+}

@@ -259,7 +259,12 @@ def merkle_root(sessions):
     return level[0].hex()
 
 
-def test_seal(sessions):
+# Named `make_test_seal`, not `test_seal`: pytest collects any module-level
+# `test_*` callable, and this helper takes a `sessions` argument, so it was
+# collected and reported as a permanent ERROR ("fixture 'sessions' not
+# found") on every run. A test line that is always red trains readers to
+# ignore test output.
+def make_test_seal(sessions):
     sessions = sorted(sessions, key=lambda s: s["session_id"].encode("utf-8"))
     return {
         "seal_version": "virp-seal/1",
@@ -428,14 +433,14 @@ class ExportAndVerify(unittest.TestCase):
         # reproducible from the public vectors; the anchor-VERIFIED path is
         # proven with a synthetic seal in the next test.)
         s = session_report(report, AUTOPILOT_SESSION)
-        self.assertEqual(s["seal_anchor"]["status"], "failed")
+        self.assertEqual(s["seal_head_match"]["status"], "failed")
         self.assertEqual(report["verdict"], "failed")
         self.assertEqual(code, 1, text)
 
-    def test_seal_anchor_verifies_for_a_session_the_seal_lists(self):
+    def test_seal_head_match_verifies_for_a_session_the_seal_lists(self):
         entries, head = synthetic_session(5)
         a = load_appendix_a()
-        seal = test_seal([
+        seal = make_test_seal([
             {"session_id": SYNTHETIC_SESSION, "entry_count": 5, "head_hash": head["last_entry_hash"]},
             {"session_id": AUTOPILOT_SESSION, "entry_count": 1, "head_hash": a["entries"]["A"]["chain_entry_hash"]},
             {"session_id": "zz-unrelated", "entry_count": 7, "head_hash": "00" * 32},
@@ -451,10 +456,10 @@ class ExportAndVerify(unittest.TestCase):
         code, text, report = verify(out)
         self.assertEqual(report["seal"]["consistency"]["status"], "verified")
         for sid in (SYNTHETIC_SESSION, AUTOPILOT_SESSION):
-            self.assertEqual(session_report(report, sid)["seal_anchor"]["status"], "verified", sid)
+            self.assertEqual(session_report(report, sid)["seal_head_match"]["status"], "verified", sid)
         self.assertEqual(report["verdict"], "operator_attested_unverifiable")
         self.assertEqual(code, 3, text)
-        self.assertIn("seal_anchor            VERIFIED", text)
+        self.assertIn("seal_head_match        VERIFIED", text)
 
     def test_seal_that_is_not_virp_seal_1_is_refused(self):
         bad = os.path.join(self.tmp, "bad-seal.json")

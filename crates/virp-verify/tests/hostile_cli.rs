@@ -387,3 +387,108 @@ fn malformed_limit_flags_are_usage_errors_not_crashes() {
     r.never_crashed("zero ceiling");
     assert_eq!(r.code, 2);
 }
+
+// ---------------------------------------------------------------------------
+// Finding 8 — symlinks
+// ---------------------------------------------------------------------------
+
+/// Both escapes, reproduced. Each of these manifest paths is lexically
+/// spotless — `sessions/s.json`, no `..`, not absolute — and each read a file
+/// outside the bundle and reported CRYPTOGRAPHICALLY-VERIFIED, exit 0.
+#[test]
+fn a_symlinked_session_file_cannot_escape_the_bundle() {
+    for (name, absolute) in [("abs", true), ("rel", false)] {
+        let root = scratch(&format!("symlink-{name}"));
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        write_json(&outside.join("secret.json"), &session_json("s", 1, 0));
+        write_json(
+            &root.join("manifest.json"),
+            &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+        );
+
+        let link = root.join("sessions/s.json");
+        let target = if absolute {
+            outside.join("secret.json")
+        } else {
+            PathBuf::from("../outside/secret.json")
+        };
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let r = run(&root, &[]);
+        r.never_crashed(name);
+        assert_eq!(r.code, 2, "{name}: the symlink was followed\n{}", r.out);
+        assert!(r.err.contains("symlink"), "{name}: {}", r.err);
+        assert!(
+            !r.out.contains("CRYPTOGRAPHICALLY-VERIFIED"),
+            "{name}: verified a file outside the bundle\n{}",
+            r.out
+        );
+    }
+}
+
+/// The case a leaf-only `symlink_metadata` check misses: the *directory* is
+/// the symlink, and the file inside it is an ordinary file.
+#[test]
+fn a_symlinked_directory_component_cannot_escape_either() {
+    let root = scratch("symlink-dir");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    write_json(&outside.join("s.json"), &session_json("s", 1, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+    // `sessions` itself is the link; `sessions/s.json` is a plain file.
+    std::fs::remove_dir_all(root.join("sessions")).unwrap();
+    std::os::unix::fs::symlink("outside", root.join("sessions")).unwrap();
+    assert!(!root.join("sessions/s.json").symlink_metadata().unwrap().is_symlink());
+
+    let r = run(&root, &[]);
+    r.never_crashed("symlinked directory");
+    assert_eq!(r.code, 2, "the symlinked directory was followed\n{}", r.out);
+    assert!(r.err.contains("symlink"), "{}", r.err);
+}
+
+/// Every manifest-named path goes through the same gate — keys, seal and
+/// artifact bodies, not just sessions.
+#[test]
+fn symlinks_are_rejected_on_every_manifest_named_path() {
+    let root = scratch("symlink-others");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("f"), b"{}").unwrap();
+    write_json(&root.join("sessions/s.json"), &session_json("s", 1, 0));
+
+    for (field, rel) in [("keys", "keys.json"), ("seal", "seal/seal.json")] {
+        let link = root.join(rel);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(outside.join("f"), &link).unwrap();
+
+        let mut m = manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]);
+        m[field] = json!(rel);
+        write_json(&root.join("manifest.json"), &m);
+
+        let r = run(&root, &[]);
+        r.never_crashed(field);
+        assert_eq!(r.code, 2, "{field}: symlink followed");
+        assert!(r.err.contains("symlink"), "{field}: {}", r.err);
+        std::fs::remove_file(&link).unwrap();
+    }
+}
+
+/// A bundle of plain files is unaffected. The gate must reject symlinks, not
+/// bundles.
+#[test]
+fn an_ordinary_bundle_of_plain_files_still_reads() {
+    let root = scratch("symlink-none");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 3, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+    let r = run(&root, &[]);
+    r.never_crashed("plain files");
+    assert_eq!(r.code, 4, "{}\n{}", r.out, r.err);
+}

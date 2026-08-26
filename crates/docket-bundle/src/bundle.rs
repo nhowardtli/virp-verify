@@ -136,6 +136,12 @@ pub enum BundleError {
         what: &'static str,
         max: usize,
     },
+    /// A path inside the bundle is, or passes through, a symlink. A bundle
+    /// is a self-contained directory; a symlink in one can leave it.
+    SymlinkInBundle {
+        manifest_path: String,
+        component: PathBuf,
+    },
     /// A string field exceeds its ceiling in [`Limits`]. Checked before the
     /// canonical bytes that would embed it are built.
     FieldTooLong {
@@ -186,6 +192,14 @@ impl std::fmt::Display for BundleError {
                 write!(f, "{}: {what} exceeds the {max}-byte limit", path.display())
             }
             Self::TooMany { what, max } => write!(f, "bundle exceeds the limit of {max} {what}"),
+            Self::SymlinkInBundle {
+                manifest_path,
+                component,
+            } => write!(
+                f,
+                "manifest path {manifest_path:?} resolves through a symlink ({}); a bundle is a self-contained directory and may not contain one",
+                component.display()
+            ),
             Self::FieldTooLong {
                 session_id,
                 sequence,
@@ -215,10 +229,58 @@ pub struct Bundle {
     pub artifacts: Option<ArtifactStore>,
 }
 
+/// Resolve a manifest-relative path inside the bundle root.
+///
+/// Two independent checks, because the lexical one alone is not the property
+/// the module doc claims.
+///
+/// 1. **Lexical.** No absolute paths, no `..`, no `.`, no prefix or root
+///    components — only plain names.
+/// 2. **No symlinks, at any depth.** A manifest path of `sessions/s.json` is
+///    lexically spotless and still reads `/etc/shadow` if `s.json` — or
+///    `sessions/` — is a symlink. Both were confirmed to escape: an absolute
+///    target and a `../../` relative target each verified
+///    CRYPTOGRAPHICALLY-VERIFIED against a file outside the bundle.
+///
+/// Symlinks are rejected outright rather than resolved-and-contained. A
+/// bundle is a self-contained directory, so a symlink inside one is not a
+/// legitimate construct and there is nothing to preserve by allowing it. A
+/// containment check would also still admit a symlink that stays *inside* the
+/// root, which creates aliasing — two manifest paths naming one file — that
+/// is finding 9's inflation problem arriving through a second door. And
+/// `canonicalize`-then-compare resolves the path twice: once for the check,
+/// once for the open, which is a race the outright rejection does not need.
+///
+/// Every component BELOW the root is checked. The root itself is not: the
+/// operator names it on the command line, and if they point the verifier at
+/// a symlink that is their own directory they are choosing.
+///
+/// Residual, and worth stating plainly: `symlink_metadata` and the later
+/// `open` are still two separate resolutions, so an attacker who can mutate
+/// the bundle directory *while the verifier runs* can swap a component
+/// between them. That is a strictly smaller threat than the one closed here,
+/// and closing it needs per-component `openat`, which this crate cannot reach
+/// without `unsafe` or a new dependency.
 fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, BundleError> {
     let p = Path::new(rel);
     if p.is_absolute() || p.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err(BundleError::UnsafePath(rel.to_owned()));
+    }
+    let mut walked = root.to_path_buf();
+    for component in p.components() {
+        walked.push(component);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(md) if md.file_type().is_symlink() => {
+                return Err(BundleError::SymlinkInBundle {
+                    manifest_path: rel.to_owned(),
+                    component: walked,
+                });
+            }
+            Ok(_) => {}
+            // Not there. Not this function's error to report: the read that
+            // follows produces a precise `Io` with the full path.
+            Err(_) => break,
+        }
     }
     Ok(root.join(p))
 }
@@ -325,7 +387,11 @@ impl Bundle {
 
     /// Read a bundle directory under caller-chosen resource ceilings.
     pub fn read_dir_with_limits(root: &Path, limits: &Limits) -> Result<Bundle, BundleError> {
-        let manifest: Manifest = read_json(&root.join("manifest.json"), limits.manifest_bytes, "manifest.json")?;
+        let manifest: Manifest = read_json(
+            &safe_join(root, "manifest.json")?,
+            limits.manifest_bytes,
+            "manifest.json",
+        )?;
         if manifest.docket_bundle_version != BUNDLE_VERSION {
             return Err(BundleError::UnsupportedVersion(manifest.docket_bundle_version));
         }

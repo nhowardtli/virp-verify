@@ -189,13 +189,13 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -
         for p in &r.properties {
             out.push_str(&status_line(&p.name, &p.status, &p.detail));
         }
-        if let Some(anchor) = &s.seal_anchor {
+        if let Some(anchor) = &s.seal_head_match {
             let detail = match anchor {
-                Status::Verified => "seal attests this exact head".to_owned(),
+                Status::Verified => "this head appears in the bundled seal".to_owned(),
                 Status::Absent => "session not listed in the seal (post-seal or never sealed)".to_owned(),
                 _ => String::new(),
             };
-            out.push_str(&status_line("seal_anchor", anchor, &detail));
+            out.push_str(&status_line("seal_head_match", anchor, &detail));
         }
         if let Some(binding) = &s.artifact_binding {
             let detail = s

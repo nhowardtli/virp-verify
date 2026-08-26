@@ -229,7 +229,7 @@ fn head_sequence_overflow_never_claims_a_false_entry_count() {
         r.never_crashed(name);
 
         assert!(
-            r.out.contains("seal_anchor"),
+            r.out.contains("seal_head_match"),
             "{name}: the anchor line is missing entirely\n{}",
             r.out
         );
@@ -255,7 +255,7 @@ fn a_well_formed_seal_still_anchors() {
     let dir = bundle_with_seal("seal-good", session, &head_hash, 3, false);
     let r = run(&dir, &[]);
     r.never_crashed("well-formed");
-    assert!(r.out.contains("seal_anchor            VERIFIED"), "{}", r.out);
+    assert!(r.out.contains("seal_head_match        VERIFIED"), "{}", r.out);
 }
 
 // ---------------------------------------------------------------------------

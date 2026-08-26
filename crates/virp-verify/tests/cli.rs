@@ -57,7 +57,7 @@ fn golden_bundle_is_cryptographically_verified_exit_0() {
     assert!(out.contains("head_signature         VERIFIED"), "{out}");
     assert!(out.contains("entry_signatures       VERIFIED"), "{out}");
     assert!(out.contains("session_key_binding    VERIFIED"), "{out}");
-    assert!(out.contains("seal_anchor            ABSENT"), "{out}");
+    assert!(out.contains("seal_head_match        ABSENT"), "{out}");
     assert!(out.contains("consistency            VERIFIED"), "{out}");
     assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
     assert!(out.contains("secrets: none"), "{out}");
@@ -75,7 +75,7 @@ fn json_output_is_machine_readable() {
     assert_eq!(v["verdict"], "cryptographically_verified");
     assert_eq!(v["sessions"][0]["session_id"], "inv-lock-1");
     assert_eq!(v["sessions"][0]["verdict"], "cryptographically_verified");
-    assert_eq!(v["sessions"][0]["seal_anchor"]["status"], "absent");
+    assert_eq!(v["sessions"][0]["seal_head_match"]["status"], "absent");
     assert_eq!(v["seal"]["consistency"]["status"], "verified");
     assert_eq!(v["seal"]["signature"]["status"], "unverifiable");
     let props = v["sessions"][0]["properties"].as_array().unwrap();
@@ -274,4 +274,43 @@ fn usage_errors_exit_2() {
     let (code, out, _) = run(&["--help"]);
     assert_eq!(code, 0);
     assert!(out.contains("never signs"));
+}
+
+/// The seal-derived property is named `seal_head_match`, in both the text
+/// report and the JSON, and the old name `seal_anchor` appears in neither.
+///
+/// The old name was retired because it overclaimed. Docket compares a
+/// verified session head against the seal's row for that session and checks
+/// the seal's internal Merkle consistency; it does not verify the seal's
+/// minisign signature (see `seal.signature`, reported UNVERIFIABLE). A
+/// reader who saw `seal_anchor VERIFIED` could reasonably take it to mean
+/// "an authentic dated seal was verified", when it means only "the bundle
+/// agrees with the seal file sitting next to it". The status still says
+/// whether the match held; only the property name changed, so that the name
+/// states what was checked and the status states whether it held.
+///
+/// This test exists so the old string cannot come back by accident — a
+/// mechanical rename elsewhere, or a revert, must fail here.
+#[test]
+fn seal_property_is_named_seal_head_match_not_seal_anchor() {
+    let (_, out, _) = run(&[fixture().to_str().unwrap()]);
+    assert!(out.contains("seal_head_match"), "text report: {out}");
+    assert!(
+        !out.contains("seal_anchor"),
+        "old name is back in the text report: {out}"
+    );
+
+    let (_, json, _) = run(&["--json", fixture().to_str().unwrap()]);
+    assert!(!json.contains("seal_anchor"), "old name is back in the JSON: {json}");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let session = &v["sessions"][0];
+    assert!(session.get("seal_anchor").is_none(), "old JSON key is back: {session}");
+    assert!(
+        session.get("seal_head_match").is_some(),
+        "seal_head_match key is missing: {session}"
+    );
+
+    // The rename must not have moved the seal's own signature line, which is
+    // what keeps the head match from reading as an authenticity claim.
+    assert_eq!(v["seal"]["signature"]["status"], "unverifiable");
 }

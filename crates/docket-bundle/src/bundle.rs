@@ -694,7 +694,7 @@ impl Bundle {
         let mut sessions = Vec::with_capacity(self.sessions.len());
         for chain in &self.sessions {
             let report = verify_session(chain, &self.keyring);
-            let seal_anchor = match (&self.seal, &chain.head) {
+            let seal_head_match = match (&self.seal, &chain.head) {
                 (None, _) => None,
                 (Some(_), None) => Some(Status::unverifiable("no head to anchor")),
                 (Some(seal), Some(head)) => {
@@ -722,7 +722,7 @@ impl Bundle {
             };
             sessions.push(SessionOutcome {
                 report,
-                seal_anchor,
+                seal_head_match,
                 artifact_binding,
                 artifact_coverage,
             });
@@ -754,9 +754,14 @@ impl Bundle {
 pub struct SessionOutcome {
     #[serde(flatten)]
     pub report: SessionReport,
-    /// Present only when the bundle carries a seal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seal_anchor: Option<Status>,
+    /// Whether the seal's row for this session names the same head the
+    /// chain walk verified. The name says what was checked, not what it
+    /// proves: the seal itself is unauthenticated here (see
+    /// [`SealOutcome::signature`]), so a VERIFIED head match means the
+    /// bundle agrees with the seal file beside it, not that the seal is
+    /// genuine. Present only when the bundle carries a seal.
+    #[serde(default, rename = "seal_head_match", skip_serializing_if = "Option::is_none")]
+    pub seal_head_match: Option<Status>,
     /// Present only when the bundle carries artifact bodies: whether every
     /// carried body hashes to the `artifact_hash` its entries commit to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -791,7 +796,7 @@ pub struct BundleReport {
     pub verdict: Verdict,
 }
 
-/// Weakest-link: any failure (including a failed seal anchor, a failed
+/// Weakest-link: any failure (including a failed seal head match, a failed
 /// artifact binding or an inconsistent seal) is FAILED; otherwise the
 /// least-authenticated session verdict. An empty bundle has nothing
 /// verified and is FAILED.
@@ -802,7 +807,7 @@ fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> V
     let seal_failed = seal.is_some_and(|s| s.consistency.is_failed());
     let any_failed = sessions.iter().any(|s| {
         s.report.verdict == Verdict::Failed
-            || s.seal_anchor.as_ref().is_some_and(Status::is_failed)
+            || s.seal_head_match.as_ref().is_some_and(Status::is_failed)
             || s.artifact_binding.as_ref().is_some_and(Status::is_failed)
     });
     if any_failed || seal_failed {

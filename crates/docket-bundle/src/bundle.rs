@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::hash::is_hex_digest_64;
+use crate::limits::Limits;
 use crate::seal::Seal;
 use crate::sig::PublicKey;
 use crate::verify::{
@@ -123,6 +124,27 @@ pub enum BundleError {
     /// A carried body is referenced by no entry in the bundle: content
     /// nothing in the evidence commits to. Strict reading rejects it.
     UnreferencedArtifact(String),
+    /// A file exceeds its ceiling in [`Limits`]. Reading stops at the limit,
+    /// so the oversized content is never allocated.
+    TooLarge {
+        path: PathBuf,
+        what: &'static str,
+        max: u64,
+    },
+    /// A count exceeds its ceiling in [`Limits`].
+    TooMany {
+        what: &'static str,
+        max: usize,
+    },
+    /// A string field exceeds its ceiling in [`Limits`]. Checked before the
+    /// canonical bytes that would embed it are built.
+    FieldTooLong {
+        session_id: String,
+        sequence: i64,
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for BundleError {
@@ -160,6 +182,20 @@ impl std::fmt::Display for BundleError {
                     "carried artifact body {h} is referenced by no entry in the bundle (unattested content)"
                 )
             }
+            Self::TooLarge { path, what, max } => {
+                write!(f, "{}: {what} exceeds the {max}-byte limit", path.display())
+            }
+            Self::TooMany { what, max } => write!(f, "bundle exceeds the limit of {max} {what}"),
+            Self::FieldTooLong {
+                session_id,
+                sequence,
+                field,
+                len,
+                max,
+            } => write!(
+                f,
+                "session {session_id:?} sequence {sequence}: {field} is {len} bytes, over the {max}-byte limit"
+            ),
         }
     }
 }
@@ -187,31 +223,133 @@ fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, BundleError> {
     Ok(root.join(p))
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, BundleError> {
-    let bytes = std::fs::read(path).map_err(|source| BundleError::Io {
+/// Read at most `max` bytes, and fail if the file has more.
+///
+/// Deliberately not `metadata().len()` followed by `fs::read`: the length a
+/// filesystem reports is not a promise (a named pipe reports 0 and streams
+/// forever), and between the check and the read the file can change. Taking
+/// `max + 1` bytes bounds the allocation by construction — one byte over the
+/// ceiling is enough to know the file is too big, and no more than that is
+/// ever held.
+fn read_capped(path: &Path, max: u64, what: &'static str) -> Result<Vec<u8>, BundleError> {
+    use std::io::Read as _;
+    let io = |source| BundleError::Io {
         path: path.to_owned(),
         source,
-    })?;
+    };
+    let file = std::fs::File::open(path).map_err(io)?;
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes).map_err(io)?;
+    if bytes.len() as u64 > max {
+        return Err(BundleError::TooLarge {
+            path: path.to_owned(),
+            what,
+            max,
+        });
+    }
+    Ok(bytes)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path, max: u64, what: &'static str) -> Result<T, BundleError> {
+    let bytes = read_capped(path, max, what)?;
     serde_json::from_slice(&bytes).map_err(|source| BundleError::Json {
         path: path.to_owned(),
         source,
     })
 }
 
+/// Check the string fields that go into an entry's canonical bytes, before
+/// those bytes are built.
+///
+/// The digest fields are absent on purpose: `entry_hashes` separately
+/// requires them to be 64 lowercase hex characters, a tighter bound than any
+/// ceiling here would be.
+fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<(), BundleError> {
+    let too_long = |sequence: i64, field: &'static str, len: usize, max: usize| BundleError::FieldTooLong {
+        session_id: chain.session_id.clone(),
+        sequence,
+        field,
+        len,
+        max,
+    };
+    if chain.session_id.len() > limits.session_id_bytes {
+        return Err(too_long(
+            -1,
+            "session_id",
+            chain.session_id.len(),
+            limits.session_id_bytes,
+        ));
+    }
+    for e in &chain.entries {
+        let f = &e.fields;
+        for (field, len, max) in [
+            ("session_id", f.session_id.len(), limits.session_id_bytes),
+            ("artifact_id", f.artifact_id.len(), limits.artifact_id_bytes),
+            ("artifact_type", f.artifact_type.len(), limits.artifact_type_bytes),
+            (
+                "artifact_hash_alg",
+                f.artifact_hash_alg.len(),
+                limits.artifact_hash_alg_bytes,
+            ),
+            (
+                "artifact_schema_version",
+                f.artifact_schema_version.len(),
+                limits.artifact_schema_version_bytes,
+            ),
+            ("signer_org_id", f.signer_org_id.len(), limits.signer_org_id_bytes),
+        ] {
+            if len > max {
+                return Err(too_long(f.sequence, field, len, max));
+            }
+        }
+    }
+    if let Some(h) = &chain.head {
+        if h.fields.session_id.len() > limits.session_id_bytes {
+            return Err(too_long(
+                h.fields.last_sequence,
+                "head session_id",
+                h.fields.session_id.len(),
+                limits.session_id_bytes,
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Bundle {
-    /// Read a bundle directory. Strict; see the module docs.
+    /// Read a bundle directory under [`Limits::default`]. Strict; see the
+    /// module docs.
     pub fn read_dir(root: &Path) -> Result<Bundle, BundleError> {
-        let manifest: Manifest = read_json(&root.join("manifest.json"))?;
+        Bundle::read_dir_with_limits(root, &Limits::default())
+    }
+
+    /// Read a bundle directory under caller-chosen resource ceilings.
+    pub fn read_dir_with_limits(root: &Path, limits: &Limits) -> Result<Bundle, BundleError> {
+        let manifest: Manifest = read_json(&root.join("manifest.json"), limits.manifest_bytes, "manifest.json")?;
         if manifest.docket_bundle_version != BUNDLE_VERSION {
             return Err(BundleError::UnsupportedVersion(manifest.docket_bundle_version));
         }
         if manifest.chain_format != CHAIN_FORMAT {
             return Err(BundleError::UnsupportedChainFormat(manifest.chain_format));
         }
+        if manifest.sessions.len() > limits.sessions {
+            return Err(BundleError::TooMany {
+                what: "sessions",
+                max: limits.sessions,
+            });
+        }
+        if let Some(list) = &manifest.artifacts {
+            if list.len() > limits.artifact_bodies {
+                return Err(BundleError::TooMany {
+                    what: "artifact bodies",
+                    max: limits.artifact_bodies,
+                });
+            }
+        }
 
         let mut keyring = Keyring::new();
         if let Some(rel) = &manifest.keys {
-            let kf: KeyFile = read_json(&safe_join(root, rel)?)?;
+            let kf: KeyFile = read_json(&safe_join(root, rel)?, limits.keys_bytes, "keys.json")?;
             for k in kf.keys {
                 if k.algorithm != "ed25519" {
                     return Err(BundleError::UnsupportedKeyAlgorithm(k.algorithm));
@@ -229,14 +367,29 @@ impl Bundle {
         }
 
         let mut sessions = Vec::with_capacity(manifest.sessions.len());
+        let mut entries_total = 0usize;
         for ms in &manifest.sessions {
-            let chain: SessionChain = read_json(&safe_join(root, &ms.path)?)?;
+            let chain: SessionChain = read_json(&safe_join(root, &ms.path)?, limits.session_bytes, "session file")?;
             if chain.session_id != ms.session_id {
                 return Err(BundleError::SessionIdMismatch {
                     manifest: ms.session_id.clone(),
                     file: chain.session_id,
                 });
             }
+            if chain.entries.len() > limits.entries_per_session {
+                return Err(BundleError::TooMany {
+                    what: "entries in one session",
+                    max: limits.entries_per_session,
+                });
+            }
+            entries_total = entries_total.saturating_add(chain.entries.len());
+            if entries_total > limits.entries_total {
+                return Err(BundleError::TooMany {
+                    what: "entries across the bundle",
+                    max: limits.entries_total,
+                });
+            }
+            check_entry_field_lengths(&chain, limits)?;
             sessions.push(chain);
         }
 
@@ -244,10 +397,7 @@ impl Bundle {
             None => None,
             Some(rel) => {
                 let path = safe_join(root, rel)?;
-                let bytes = std::fs::read(&path).map_err(|source| BundleError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
+                let bytes = read_capped(&path, limits.seal_bytes, "seal file")?;
                 Some(Seal::from_slice(&bytes).map_err(BundleError::Seal)?)
             }
         };
@@ -260,15 +410,21 @@ impl Bundle {
             None => None,
             Some(list) => {
                 let mut store = ArtifactStore::new();
+                let mut artifact_bytes_total = 0u64;
                 for ma in list {
                     if !is_hex_digest_64(&ma.artifact_hash) {
                         return Err(BundleError::MalformedArtifactHash(ma.artifact_hash.clone()));
                     }
                     let path = safe_join(root, &ma.path)?;
-                    let bytes = std::fs::read(&path).map_err(|source| BundleError::Io {
-                        path: path.clone(),
-                        source,
-                    })?;
+                    let bytes = read_capped(&path, limits.artifact_body_bytes, "artifact body")?;
+                    artifact_bytes_total = artifact_bytes_total.saturating_add(bytes.len() as u64);
+                    if artifact_bytes_total > limits.artifact_bytes_total {
+                        return Err(BundleError::TooLarge {
+                            path: root.to_owned(),
+                            what: "artifact bodies in total",
+                            max: limits.artifact_bytes_total,
+                        });
+                    }
                     if store.insert(ma.artifact_hash.clone(), bytes).is_some() {
                         return Err(BundleError::DuplicateArtifact(ma.artifact_hash.clone()));
                     }

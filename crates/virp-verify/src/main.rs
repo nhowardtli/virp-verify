@@ -10,19 +10,31 @@ use std::process::ExitCode;
 
 use docket_bundle::bundle::{Bundle, BundleReport};
 use docket_bundle::verify::{Status, Verdict};
+use docket_bundle::Limits;
 
 const USAGE: &str = "\
 virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
-    virp-verify [--json] <bundle-dir>
+    virp-verify [--json] [--max-sessions N] [--max-entries N] <bundle-dir>
 
 ARGS:
     <bundle-dir>   a Docket evidence bundle directory (manifest.json at its root)
 
 OPTIONS:
-    --json         print the full report as JSON instead of text
-    -h, --help     show this help
+    --json               print the full report as JSON instead of text
+    --max-sessions N     reject a bundle listing more than N sessions (default 10000)
+    --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
+    -h, --help           show this help
+
+RESOURCE LIMITS:
+    A bundle is supplied by whoever wants it verified, so its size is not
+    trusted. File sizes, session and entry counts, artifact-body sizes and
+    string field lengths all have ceilings; exceeding one is UNREADABLE (2),
+    never a verdict. The defaults sit orders of magnitude above the largest
+    real bundle observed (3456 entries in a session, 350 sessions in a seal).
+    The two counts above are adjustable for a bundle that legitimately
+    exceeds them.
 
 EXIT CODES (deliberately NOT collapsed into pass/fail):
     0   CRYPTOGRAPHICALLY-VERIFIED  every session signed and verified under a supplied public key
@@ -38,9 +50,34 @@ virp-verify never signs, never holds a private key, and never executes anything.
 fn main() -> ExitCode {
     let mut json = false;
     let mut path: Option<PathBuf> = None;
+    let mut limits = Limits::default();
+    let mut pending: Option<&'static str> = None;
     for arg in std::env::args_os().skip(1) {
+        // A value expected by the previous flag. Taken before anything else
+        // so that a numeric value is never mistaken for a bundle path.
+        if let Some(flag) = pending.take() {
+            let Some(n) = arg.to_str().and_then(|s| s.parse::<usize>().ok()) else {
+                eprintln!("virp-verify: {flag} needs a non-negative integer\n");
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            match flag {
+                "--max-sessions" => limits.sessions = n,
+                _ => limits.entries_total = n,
+            }
+            continue;
+        }
         match arg.to_str() {
             Some("--json") => json = true,
+            Some(f @ ("--max-sessions" | "--max-entries")) => {
+                // Borrowed from USAGE rather than from `arg`, so the flag name
+                // outlives this iteration without an allocation.
+                pending = Some(if f == "--max-sessions" {
+                    "--max-sessions"
+                } else {
+                    "--max-entries"
+                });
+            }
             Some("-h" | "--help") => {
                 print!("{USAGE}");
                 return ExitCode::from(0);
@@ -58,12 +95,17 @@ fn main() -> ExitCode {
             }
         }
     }
+    if let Some(flag) = pending {
+        eprintln!("virp-verify: {flag} needs a value\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
     let Some(path) = path else {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     };
 
-    let bundle = match Bundle::read_dir(&path) {
+    let bundle = match Bundle::read_dir_with_limits(&path, &limits) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("virp-verify: cannot read bundle {}: {e}", path.display());

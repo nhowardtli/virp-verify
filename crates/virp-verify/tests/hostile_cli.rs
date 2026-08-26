@@ -257,3 +257,133 @@ fn a_well_formed_seal_still_anchors() {
     r.never_crashed("well-formed");
     assert!(r.out.contains("seal_anchor            VERIFIED"), "{}", r.out);
 }
+
+// ---------------------------------------------------------------------------
+// Finding 7 — resource ceilings
+// ---------------------------------------------------------------------------
+
+/// Limits must be invisible to real evidence. These are the largest values
+/// actually observed — a 3,456-entry session and a 350-session seal — and
+/// they must pass under the DEFAULT limits, with no flag.
+///
+/// This is the test that matters most in this group. A ceiling a legitimate
+/// bundle trips gets the attacker the refusal they wanted, so the cost of
+/// being wrong here is higher than the cost of a limit being loose.
+#[test]
+fn the_largest_real_session_passes_under_default_limits() {
+    let root = scratch("limits-realistic");
+    let session = session_json("autopilot:2026-08-24", 3456, 0);
+    write_json(&root.join("sessions/s.json"), &session);
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![
+            json!({"session_id": "autopilot:2026-08-24", "path": "sessions/s.json"}),
+        ]),
+    );
+
+    let bytes = std::fs::metadata(root.join("sessions/s.json")).unwrap().len();
+    assert!(
+        bytes > 1_500_000,
+        "fixture is not the size of the real thing ({bytes} bytes)"
+    );
+
+    let r = run(&root, &[]);
+    r.never_crashed("3456-entry session");
+    assert_eq!(r.code, 4, "the real-world-sized session was refused\n{}", r.err);
+    assert!(r.out.contains("(3456 entries)"), "{}", r.out);
+}
+
+#[test]
+fn a_session_over_the_entry_ceiling_is_unreadable() {
+    let root = scratch("limits-entries");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 40, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+
+    // Under the ceiling, the same bundle reads fine.
+    run(&root, &["--max-entries", "40"]).never_crashed("at the ceiling");
+    assert_eq!(run(&root, &["--max-entries", "40"]).code, 4);
+
+    let r = run(&root, &["--max-entries", "39"]);
+    r.never_crashed("over the ceiling");
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.err.contains("limit of 39"), "{}", r.err);
+    assert!(r.err.contains("UNREADABLE"), "{}", r.err);
+}
+
+#[test]
+fn a_manifest_over_the_session_ceiling_is_unreadable() {
+    let root = scratch("limits-sessions");
+    let mut rows = Vec::new();
+    for i in 0..5 {
+        let sid = format!("s{i}");
+        write_json(&root.join(format!("sessions/{sid}.json")), &session_json(&sid, 1, 0));
+        rows.push(json!({"session_id": sid, "path": format!("sessions/{sid}.json")}));
+    }
+    write_json(&root.join("manifest.json"), &manifest(rows));
+
+    assert_eq!(run(&root, &["--max-sessions", "5"]).code, 4, "at the ceiling");
+
+    let r = run(&root, &["--max-sessions", "4"]);
+    r.never_crashed("over the ceiling");
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("limit of 4 sessions"), "{}", r.err);
+}
+
+/// A string field long enough to matter is refused before the canonical
+/// bytes that would embed it are built.
+#[test]
+fn an_absurd_string_field_is_rejected_before_canonical_allocation() {
+    let root = scratch("limits-field");
+    let mut session = session_json("s", 2, 0);
+    // 4 MB of artifact_id, against a 1 KB ceiling. The real maximum is 57.
+    session["entries"][1]["artifact_id"] = json!("x".repeat(4 * 1024 * 1024));
+    write_json(&root.join("sessions/s.json"), &session);
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+
+    let r = run(&root, &[]);
+    r.never_crashed("absurd artifact_id");
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.err.contains("artifact_id"), "{}", r.err);
+    assert!(r.err.contains("sequence 1"), "{}", r.err);
+}
+
+/// The flags themselves are input too.
+#[test]
+fn malformed_limit_flags_are_usage_errors_not_crashes() {
+    let root = scratch("limits-flags");
+    write_json(&root.join("sessions/s.json"), &session_json("s", 1, 0));
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+
+    for args in [
+        vec!["--max-entries", "not-a-number"],
+        vec!["--max-entries", "-1"],
+        vec!["--max-sessions", "999999999999999999999999"],
+    ] {
+        let r = run(&root, &args);
+        r.never_crashed(&format!("{args:?}"));
+        assert_eq!(r.code, 2, "{args:?} did not produce a usage error");
+    }
+
+    // A trailing flag with no value must not consume the bundle path and
+    // then report a missing path.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_virp-verify"))
+        .args(["--max-entries"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs a value"));
+
+    // Zero is a legal, if useless, ceiling — not a parse error.
+    let r = run(&root, &["--max-entries", "0"]);
+    r.never_crashed("zero ceiling");
+    assert_eq!(r.code, 2);
+}

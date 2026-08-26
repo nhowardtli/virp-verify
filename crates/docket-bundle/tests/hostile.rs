@@ -367,3 +367,112 @@ mod hmac {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Finding 7 — byte ceilings, at the library boundary
+// ---------------------------------------------------------------------------
+
+mod limits {
+    use std::path::{Path, PathBuf};
+
+    use docket_bundle::bundle::BundleError;
+    use docket_bundle::{Bundle, Limits};
+    use serde_json::{json, Value};
+
+    fn write(path: &Path, v: &Value) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(v).unwrap()).unwrap();
+    }
+
+    /// A minimal readable bundle: one session, one entry, correct genesis.
+    fn bundle(name: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("limits-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let sid = "s";
+        let genesis = docket_bundle::genesis_hash_hex(sid);
+        let fields = docket_bundle::EntryFields {
+            artifact_hash: docket_bundle::sha256_hex(b"body"),
+            artifact_hash_alg: "sha256".to_owned(),
+            artifact_id: "obs:0".to_owned(),
+            artifact_schema_version: "1".to_owned(),
+            artifact_type: "observation".to_owned(),
+            monotonic_ns: 1,
+            previous_entry_hash: genesis,
+            sequence: 0,
+            session_id: sid.to_owned(),
+            signer_node_id: 13,
+            signer_org_id: "local".to_owned(),
+            timestamp_ns: 1,
+        };
+        let hash = docket_bundle::sha256_hex(&fields.canonical_bytes());
+        let mut entry = serde_json::to_value(&fields).unwrap();
+        entry["chain_entry_hash"] = json!(hash);
+        write(
+            &root.join("sessions/s.json"),
+            &json!({
+                "session_id": sid,
+                "entries": [entry],
+                "head": {"session_id": sid, "last_sequence": 0, "last_entry_hash": hash},
+            }),
+        );
+        write(
+            &root.join("manifest.json"),
+            &json!({
+                "docket_bundle_version": "docket-bundle/0.1",
+                "chain_format": "v1",
+                "sessions": [{"session_id": sid, "path": "sessions/s.json"}],
+            }),
+        );
+        root
+    }
+
+    #[test]
+    fn every_byte_ceiling_is_enforced() {
+        let root = bundle("bytes");
+        // Default limits read it.
+        assert!(Bundle::read_dir(&root).is_ok());
+
+        for (name, tighten) in [
+            ("manifest", (|l: &mut Limits| l.manifest_bytes = 4) as fn(&mut Limits)),
+            ("session", |l: &mut Limits| l.session_bytes = 4),
+        ] {
+            let mut limits = Limits::default();
+            tighten(&mut limits);
+            let err = Bundle::read_dir_with_limits(&root, &limits)
+                .err()
+                .unwrap_or_else(|| panic!("{name}: oversized file was accepted"));
+            assert!(matches!(err, BundleError::TooLarge { max: 4, .. }), "{name}: {err:?}");
+            assert!(err.to_string().contains("exceeds the 4-byte limit"), "{err}");
+        }
+    }
+
+    /// `Limits::unlimited()` must actually read a bundle the defaults read —
+    /// an escape hatch that rejects everything is not an escape hatch.
+    #[test]
+    fn unlimited_still_reads_a_normal_bundle() {
+        let root = bundle("unlimited");
+        assert!(Bundle::read_dir_with_limits(&root, &Limits::unlimited()).is_ok());
+    }
+
+    /// The documented defaults, asserted so a later edit cannot quietly
+    /// tighten one below the largest real bundle. The right-hand values are
+    /// the measured maxima from HARDENING-SURVEY.md.
+    #[test]
+    fn defaults_clear_every_measured_maximum() {
+        let l = Limits::default();
+        assert!(l.entries_per_session > 3_456, "largest real session");
+        assert!(l.entries_total > 13_864, "whole live chain");
+        assert!(l.sessions > 350, "largest real seal");
+        assert!(l.artifact_bodies > 13_677, "artifact rows on the chain");
+        assert!(l.artifact_body_bytes > 2_020, "largest real body");
+        assert!(l.artifact_bytes_total > 4_220_073, "all bodies");
+        assert!(l.session_bytes > 2_119_935, "largest real session file");
+        assert!(l.seal_bytes > 57_155, "reference seal file");
+        assert!(l.session_id_bytes > 42, "longest real session_id");
+        assert!(l.artifact_id_bytes > 57, "longest real artifact_id");
+        assert!(l.artifact_type_bytes > 15, "longest real artifact_type");
+        assert!(l.artifact_hash_alg_bytes > 6, "longest real artifact_hash_alg");
+        assert!(l.artifact_schema_version_bytes > 1, "longest real schema_version");
+        assert!(l.signer_org_id_bytes > 5, "longest real signer_org_id");
+    }
+}

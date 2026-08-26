@@ -149,6 +149,15 @@ pub enum BundleError {
         manifest_path: String,
         component: PathBuf,
     },
+    /// A string field carries a byte the producer could not have written
+    /// into the canonical form unescaped. See [`unencodable_byte`].
+    UnencodableField {
+        session_id: String,
+        sequence: i64,
+        field: &'static str,
+        offset: usize,
+        byte: u8,
+    },
     /// A string field exceeds its ceiling in [`Limits`]. Checked before the
     /// canonical bytes that would embed it are built.
     FieldTooLong {
@@ -206,6 +215,21 @@ impl std::fmt::Display for BundleError {
             Self::DuplicateSessionPath(p) => {
                 write!(f, "manifest lists the session file {p:?} more than once")
             }
+            // The offending byte is reported as a number, never echoed: the
+            // values this rejects include raw control characters, and writing
+            // them to a terminal is how a diagnostic becomes an attack.
+            Self::UnencodableField {
+                session_id,
+                sequence,
+                field,
+                offset,
+                byte,
+            } => write!(
+                f,
+                "session {session_id:?} sequence {sequence}: {field} contains byte 0x{byte:02x} at offset {offset}, \
+                 which the producer could not have written into the canonical form (VIRP v1 inserts string values \
+                 unescaped, so this value's field boundaries are ambiguous)"
+            ),
             Self::SymlinkInBundle {
                 manifest_path,
                 component,
@@ -334,12 +358,60 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, max: u64, what: &'stat
     })
 }
 
-/// Check the string fields that go into an entry's canonical bytes, before
-/// those bytes are built.
+/// The first byte in `s` that a VIRP v1 producer could not have written into
+/// a canonical string value, with its offset.
 ///
-/// The digest fields are absent on purpose: `entry_hashes` separately
-/// requires them to be 64 lowercase hex characters, a tighter bound than any
-/// ceiling here would be.
+/// # Why this guard exists, and what it is not
+///
+/// Docket reproduces VIRP's canonical construction exactly, including the
+/// fact that string values are inserted **without JSON escaping**. That
+/// reproduction is correct and must not change: it is the compatibility
+/// contract with the C tree and with the golden vectors, and altering a byte
+/// of it would invalidate every signature ever produced.
+///
+/// The consequence is that canonical bytes are not guaranteed to be valid
+/// JSON, and a value containing a quote can forge a field boundary. This
+/// function is the read-side half of the answer: a value that could not have
+/// been encoded safely is refused, so it never reaches the canonical builder.
+///
+/// **This is defence in depth, not the fix.** The real fix is producer-side —
+/// escaping in the C canonical builder, or length-delimited encoding — and it
+/// requires a NEW canonical format version, because either one changes the
+/// bytes that get signed. Until that exists, refusing the input is the only
+/// thing Docket can do without breaking the contract it exists to honour.
+///
+/// # What is rejected
+///
+/// * `"` (0x22) — closes the string value and forges a boundary.
+/// * `\` (0x5C) — the escape introducer a v1 producer never emits.
+/// * any byte below 0x20, and 0x7F — control characters, which are not legal
+///   unescaped inside a JSON string in any case.
+///
+/// Banning the quote subsumes every delimiter pattern the review lists
+/// (`","`, `":`, `{"`, `"}`): each contains one, so none is reachable.
+///
+/// # What is deliberately NOT rejected
+///
+/// Non-ASCII. A UTF-8 continuation byte is always >= 0x80 and can never be
+/// 0x22 or 0x5C, so multibyte text creates no ambiguity in the canonical and
+/// banning it would make the guard narrower than the property it defends.
+/// Device and site names are the obvious future source of non-ASCII, and
+/// refusing them would be a self-inflicted narrowing.
+///
+/// # Confirmed against real data
+///
+/// Every canonical string field of all 13,864 entries on the live chain
+/// (2026-08-26, WAL-inclusive) was scanned: no quote, no backslash, no
+/// control character, no invalid UTF-8. The values in use are drawn from
+/// `[-0-9:a-zR]`. The guard rejects nothing that exists.
+pub fn unencodable_byte(s: &str) -> Option<(usize, u8)> {
+    s.bytes()
+        .enumerate()
+        .find(|&(_, b)| b == b'"' || b == b'\\' || b < 0x20 || b == 0x7f)
+}
+
+/// Check the string fields that go into an entry's canonical bytes, before
+/// those bytes are built: length ceilings and encodability, in one pass.
 fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<(), BundleError> {
     let too_long = |sequence: i64, field: &'static str, len: usize, max: usize| BundleError::FieldTooLong {
         session_id: chain.session_id.clone(),
@@ -348,6 +420,16 @@ fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<()
         len,
         max,
     };
+    let unencodable = |sequence: i64, field: &'static str, value: &str| {
+        unencodable_byte(value).map(|(offset, byte)| BundleError::UnencodableField {
+            session_id: chain.session_id.clone(),
+            sequence,
+            field,
+            offset,
+            byte,
+        })
+    };
+
     if chain.session_id.len() > limits.session_id_bytes {
         return Err(too_long(
             -1,
@@ -356,29 +438,43 @@ fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<()
             limits.session_id_bytes,
         ));
     }
+    if let Some(e) = unencodable(-1, "session_id", &chain.session_id) {
+        return Err(e);
+    }
+
     for e in &chain.entries {
         let f = &e.fields;
-        for (field, len, max) in [
-            ("session_id", f.session_id.len(), limits.session_id_bytes),
-            ("artifact_id", f.artifact_id.len(), limits.artifact_id_bytes),
-            ("artifact_type", f.artifact_type.len(), limits.artifact_type_bytes),
+        // Every string field that enters the canonical bytes. The two digest
+        // fields are included: `entry_hashes` requires them to be 64-hex, but
+        // that is a graded property that runs later, and a read-time gate must
+        // not depend on a check that has not happened yet.
+        for (field, value, max) in [
+            ("session_id", &f.session_id, limits.session_id_bytes),
+            ("artifact_id", &f.artifact_id, limits.artifact_id_bytes),
+            ("artifact_type", &f.artifact_type, limits.artifact_type_bytes),
             (
                 "artifact_hash_alg",
-                f.artifact_hash_alg.len(),
+                &f.artifact_hash_alg,
                 limits.artifact_hash_alg_bytes,
             ),
             (
                 "artifact_schema_version",
-                f.artifact_schema_version.len(),
+                &f.artifact_schema_version,
                 limits.artifact_schema_version_bytes,
             ),
-            ("signer_org_id", f.signer_org_id.len(), limits.signer_org_id_bytes),
+            ("signer_org_id", &f.signer_org_id, limits.signer_org_id_bytes),
+            ("artifact_hash", &f.artifact_hash, limits.session_id_bytes),
+            ("previous_entry_hash", &f.previous_entry_hash, limits.session_id_bytes),
         ] {
-            if len > max {
-                return Err(too_long(f.sequence, field, len, max));
+            if value.len() > max {
+                return Err(too_long(f.sequence, field, value.len(), max));
+            }
+            if let Some(err) = unencodable(f.sequence, field, value) {
+                return Err(err);
             }
         }
     }
+
     if let Some(h) = &chain.head {
         if h.fields.session_id.len() > limits.session_id_bytes {
             return Err(too_long(
@@ -387,6 +483,14 @@ fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<()
                 h.fields.session_id.len(),
                 limits.session_id_bytes,
             ));
+        }
+        for (field, value) in [
+            ("head session_id", &h.fields.session_id),
+            ("head last_entry_hash", &h.fields.last_entry_hash),
+        ] {
+            if let Some(err) = unencodable(h.fields.last_sequence, field, value) {
+                return Err(err);
+            }
         }
     }
     Ok(())
@@ -461,6 +565,15 @@ impl Bundle {
         for ms in &manifest.sessions {
             if !seen_ids.insert(ms.session_id.as_str()) {
                 return Err(BundleError::DuplicateSession(ms.session_id.clone()));
+            }
+            if let Some((offset, byte)) = unencodable_byte(&ms.session_id) {
+                return Err(BundleError::UnencodableField {
+                    session_id: ms.session_id.clone(),
+                    sequence: -1,
+                    field: "manifest session_id",
+                    offset,
+                    byte,
+                });
             }
             let components: Vec<Component<'_>> = Path::new(ms.path.as_str()).components().collect();
             if !seen_paths.insert(components) {

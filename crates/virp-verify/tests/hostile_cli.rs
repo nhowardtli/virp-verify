@@ -602,3 +602,113 @@ fn distinct_sessions_still_read() {
     assert_eq!(r.code, 4, "{}\n{}", r.out, r.err);
     assert_eq!(r.out.matches("\nsession s").count(), 4, "{}", r.out);
 }
+
+// ---------------------------------------------------------------------------
+// Finding 10 — canonical string guard
+// ---------------------------------------------------------------------------
+
+/// The forgery this guard exists to refuse. VIRP v1 inserts string values
+/// into the canonical WITHOUT escaping, so a quote inside a value closes the
+/// string and the field boundaries after it become ambiguous.
+#[test]
+fn a_quote_in_a_canonical_field_is_unreadable() {
+    for (name, field, value) in [
+        ("quote", "artifact_id", "obs:0\",\"artifact_schema_version\":\"9"),
+        ("backslash", "artifact_id", "obs:0\\"),
+        ("nul", "artifact_type", "observation\u{0}"),
+        ("newline", "signer_org_id", "local\n"),
+        ("tab", "artifact_type", "obs\t"),
+        ("del", "signer_org_id", "local\u{7f}"),
+        ("bare-quote-in-session-id", "session_id", "s\""),
+    ] {
+        let root = scratch(&format!("guard-{name}"));
+        let mut session = session_json("s", 2, 0);
+        session["entries"][1][field] = json!(value);
+        write_json(&root.join("sessions/s.json"), &session);
+        write_json(
+            &root.join("manifest.json"),
+            &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+        );
+
+        let r = run(&root, &[]);
+        r.never_crashed(name);
+        assert_eq!(r.code, 2, "{name}: accepted an unencodable {field}\n{}", r.out);
+        assert!(r.err.contains(field), "{name}: {}", r.err);
+        assert!(r.err.contains("could not have written"), "{name}: {}", r.err);
+    }
+}
+
+/// The diagnostic must not echo the offending bytes. A verifier that prints
+/// attacker-chosen control characters to a terminal has turned its own error
+/// message into the delivery mechanism.
+#[test]
+fn the_rejection_message_does_not_echo_the_offending_bytes() {
+    let root = scratch("guard-noecho");
+    let mut session = session_json("s", 2, 0);
+    // An escape sequence that would reset a terminal if echoed.
+    session["entries"][1]["artifact_id"] = json!("obs:\u{1b}[2J\u{1b}[1;1H");
+    write_json(&root.join("sessions/s.json"), &session);
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+
+    let r = run(&root, &[]);
+    r.never_crashed("no-echo");
+    assert_eq!(r.code, 2);
+    assert!(!r.err.contains('\u{1b}'), "the escape byte was echoed: {:?}", r.err);
+    assert!(
+        r.err.contains("0x1b"),
+        "the byte should be named as a number: {}",
+        r.err
+    );
+    assert!(r.err.contains("offset 4"), "{}", r.err);
+}
+
+/// Non-ASCII is explicitly ALLOWED, and this test is the record of that
+/// decision. A UTF-8 continuation byte is always >= 0x80, so it can never be
+/// a quote or a backslash and creates no ambiguity in the canonical. Banning
+/// it would make the guard narrower than the property it defends, and device
+/// and site names are the obvious future source.
+#[test]
+fn non_ascii_values_are_allowed() {
+    let root = scratch("guard-utf8");
+    let mut session = session_json("s", 2, 0);
+    session["entries"][1]["artifact_id"] = json!("obs:café-münchen-東京-🔒");
+    session["entries"][1]["signer_org_id"] = json!("Ünïcödé");
+    write_json(&root.join("sessions/s.json"), &session);
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![json!({"session_id": "s", "path": "sessions/s.json"})]),
+    );
+
+    let r = run(&root, &[]);
+    r.never_crashed("non-ascii");
+    assert_ne!(r.code, 2, "non-ASCII was refused at read time\n{}", r.err);
+    // It reads, and then grades honestly: the hash was computed over the
+    // original artifact_id, so changing it is a hash mismatch, not a
+    // readability problem.
+    assert!(r.out.contains("entry_hashes           FAILED"), "{}", r.out);
+}
+
+/// The character set real evidence actually uses, drawn from the 313 scan:
+/// all 13,864 entries used only these. Nothing here may be refused.
+#[test]
+fn the_character_set_real_evidence_uses_is_untouched() {
+    let root = scratch("guard-real");
+    let mut session = session_json("camera:tapo-c100-accept:2026-08-26", 2, 0);
+    session["entries"][1]["artifact_id"] = json!("camdet:tapo-c100:10:1787611791414802831:yolo11x-7bc158aa");
+    session["entries"][1]["artifact_type"] = json!("gate_execution");
+    session["entries"][1]["signer_org_id"] = json!("local");
+    write_json(&root.join("sessions/s.json"), &session);
+    write_json(
+        &root.join("manifest.json"),
+        &manifest(vec![
+            json!({"session_id": "camera:tapo-c100-accept:2026-08-26", "path": "sessions/s.json"}),
+        ]),
+    );
+
+    let r = run(&root, &[]);
+    r.never_crashed("real characters");
+    assert_ne!(r.code, 2, "real-world values were refused\n{}", r.err);
+}

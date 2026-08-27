@@ -8,15 +8,16 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use docket_bundle::bundle::{Bundle, BundleReport};
+use docket_bundle::bundle::{Bundle, BundleReport, SealKeyCheck};
 use docket_bundle::verify::{Status, Verdict};
-use docket_bundle::Limits;
+use docket_bundle::{Limits, MinisignPublicKey, MinisignSignature};
 
 const USAGE: &str = "\
 virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
-    virp-verify [--json] [--max-sessions N] [--max-entries N] <bundle-dir>
+    virp-verify [--json] [--max-sessions N] [--max-entries N]
+                [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
     <bundle-dir>   a Docket evidence bundle directory (manifest.json at its root)
@@ -25,6 +26,14 @@ OPTIONS:
     --json               print the full report as JSON instead of text
     --max-sessions N     reject a bundle listing more than N sessions (default 10000)
     --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
+    --seal-key FILE      minisign PUBLIC key to check the seal's signature under.
+                         Must arrive OUT OF BAND: the verifier never takes the seal
+                         key from inside the bundle, and ignores the seal's own
+                         seal_public_key field. Without this flag the seal signature
+                         is reported UNVERIFIABLE, as before.
+    --seal-sig FILE      detached .minisig over the seal file, for bundles that do
+                         not carry one (overrides a carried signature). Only
+                         meaningful with --seal-key.
     -h, --help           show this help
 
 RESOURCE LIMITS:
@@ -51,11 +60,24 @@ fn main() -> ExitCode {
     let mut json = false;
     let mut path: Option<PathBuf> = None;
     let mut limits = Limits::default();
+    let mut seal_key_path: Option<PathBuf> = None;
+    let mut seal_sig_path: Option<PathBuf> = None;
     let mut pending: Option<&'static str> = None;
     for arg in std::env::args_os().skip(1) {
         // A value expected by the previous flag. Taken before anything else
-        // so that a numeric value is never mistaken for a bundle path.
+        // so that a flag's value is never mistaken for a bundle path.
         if let Some(flag) = pending.take() {
+            match flag {
+                "--seal-key" => {
+                    seal_key_path = Some(PathBuf::from(&arg));
+                    continue;
+                }
+                "--seal-sig" => {
+                    seal_sig_path = Some(PathBuf::from(&arg));
+                    continue;
+                }
+                _ => {}
+            }
             let Some(n) = arg.to_str().and_then(|s| s.parse::<usize>().ok()) else {
                 eprintln!("virp-verify: {flag} needs a non-negative integer\n");
                 eprint!("{USAGE}");
@@ -69,13 +91,14 @@ fn main() -> ExitCode {
         }
         match arg.to_str() {
             Some("--json") => json = true,
-            Some(f @ ("--max-sessions" | "--max-entries")) => {
+            Some(f @ ("--max-sessions" | "--max-entries" | "--seal-key" | "--seal-sig")) => {
                 // Borrowed from USAGE rather than from `arg`, so the flag name
                 // outlives this iteration without an allocation.
-                pending = Some(if f == "--max-sessions" {
-                    "--max-sessions"
-                } else {
-                    "--max-entries"
+                pending = Some(match f {
+                    "--max-sessions" => "--max-sessions",
+                    "--max-entries" => "--max-entries",
+                    "--seal-key" => "--seal-key",
+                    _ => "--seal-sig",
                 });
             }
             Some("-h" | "--help") => {
@@ -104,6 +127,28 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     };
+    if seal_sig_path.is_some() && seal_key_path.is_none() {
+        eprintln!("virp-verify: --seal-sig is only meaningful with --seal-key\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
+
+    // Out-of-band seal material is read BEFORE the bundle: a bad operator
+    // file is a usage problem (exit 2), never a verdict about the evidence.
+    let seal_key = match &seal_key_path {
+        None => None,
+        Some(p) => match read_minisign(p, "--seal-key", MinisignPublicKey::from_text) {
+            Ok(k) => Some(k),
+            Err(code) => return code,
+        },
+    };
+    let seal_sig = match &seal_sig_path {
+        None => None,
+        Some(p) => match read_minisign(p, "--seal-sig", MinisignSignature::from_text) {
+            Ok(s) => Some(s),
+            Err(code) => return code,
+        },
+    };
 
     let bundle = match Bundle::read_dir_with_limits(&path, &limits) {
         Ok(b) => b,
@@ -113,7 +158,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let report = bundle.verify();
+    let check = seal_key.as_ref().map(|key| SealKeyCheck {
+        key,
+        signature: seal_sig.as_ref(),
+    });
+    let report = bundle.verify_with_seal_key(check.as_ref());
 
     if json {
         match serde_json_string(&report) {
@@ -124,10 +173,27 @@ fn main() -> ExitCode {
             }
         }
     } else {
-        print!("{}", render_text(&path, &bundle, &report));
+        print!("{}", render_text(&path, &bundle, &report, seal_key.is_some()));
     }
 
     ExitCode::from(exit_code(report.verdict))
+}
+
+/// Read and parse an out-of-band minisign file named by `flag`. Any problem
+/// is reported with the path and exits 2: nothing was verified.
+fn read_minisign<T>(
+    path: &std::path::Path,
+    flag: &str,
+    parse: impl Fn(&str) -> Result<T, docket_bundle::MinisignError>,
+) -> Result<T, ExitCode> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        eprintln!("virp-verify: {flag}: cannot read {}: {e}", path.display());
+        ExitCode::from(2)
+    })?;
+    parse(&text).map_err(|e| {
+        eprintln!("virp-verify: {flag}: {}: {e}", path.display());
+        ExitCode::from(2)
+    })
 }
 
 fn exit_code(v: Verdict) -> u8 {
@@ -152,7 +218,7 @@ fn status_line(name: &str, status: &Status, detail: &str) -> String {
     format!("  {name:<22} {:<38} {detail}{extra}\n", status.label())
 }
 
-fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -> String {
+fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, seal_key_supplied: bool) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "virp-verify — Docket standalone VIRP chain verifier");
@@ -220,8 +286,14 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -
             &seal.consistency,
             &format!("merkle root recomputed over {} listed sessions", seal.session_count),
         ));
-        out.push_str(&status_line("signature", &seal.signature, ""));
+        out.push_str(&status_line("signature", &seal.signature, &seal.signature_detail));
         let _ = writeln!(out, "  the seal says of itself: {}", seal.residual_disclosure);
+        let _ = writeln!(out);
+    } else if seal_key_supplied {
+        let _ = writeln!(
+            out,
+            "seal: none in this bundle; the supplied --seal-key checked nothing"
+        );
         let _ = writeln!(out);
     }
 
@@ -239,10 +311,18 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport) -
     );
     let _ = writeln!(out, "  ABSENT              the property is not present in the evidence");
     let _ = writeln!(out, "  FAILED              checked and wrong");
-    let _ = writeln!(
-        out,
-        "Not checked by this tool: the seal's minisign signature, the seal's OpenTimestamps proof,"
-    );
+    // Without --seal-key this line is verbatim what it always was — the
+    // docket viewer's page asserts parity with it (crates/docket/tests).
+    // With the key, claiming the minisign signature went unchecked would be
+    // false, so the clause is dropped.
+    if seal_key_supplied {
+        let _ = writeln!(out, "Not checked by this tool: the seal's OpenTimestamps proof,");
+    } else {
+        let _ = writeln!(
+            out,
+            "Not checked by this tool: the seal's minisign signature, the seal's OpenTimestamps proof,"
+        );
+    }
     let _ = writeln!(
         out,
         "  milestones (unsigned in D-1), artifact bodies the bundle does not carry, and anything before the chain's capture boundary."

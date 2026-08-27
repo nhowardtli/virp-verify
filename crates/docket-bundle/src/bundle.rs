@@ -6,8 +6,15 @@
 //!   keys.json                optional — key_id → public key (see [`KeyFile`])
 //!   sessions/<name>.json     one [`SessionChain`] per session, paths named in the manifest
 //!   seal/<name>.json         optional D-0 seal anchor, path named in the manifest
+//!   seal/<name>.minisig      optional detached minisign signature over the seal file,
+//!                            path named in the manifest (`seal_signature`)
 //!   artifacts/<hash>         optional raw artifact bodies, paths named in the manifest
 //! ```
+//!
+//! The seal SIGNATURE may travel in the bundle; the seal PUBLIC KEY never
+//! does. It arrives out of band ([`SealKeyCheck`]) or the signature stays
+//! UNVERIFIABLE — the seal's own `seal_public_key` field is ignored either
+//! way, and the report says so.
 //!
 //! Every path in the manifest is relative to the bundle root and may not
 //! escape it. The reader is strict: unknown manifest versions, missing
@@ -22,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hash::is_hex_digest_64;
 use crate::limits::Limits;
+use crate::minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
 use crate::seal::Seal;
 use crate::sig::PublicKey;
 use crate::verify::{
@@ -70,6 +78,11 @@ pub struct Manifest {
     /// Relative path to the seal JSON.
     #[serde(default)]
     pub seal: Option<String>,
+    /// Relative path to the detached minisign signature over the seal file.
+    /// A signature is a claim the verifier grades, so it may travel in-band;
+    /// the PUBLIC KEY that checks it never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal_signature: Option<String>,
     /// Artifact bodies carried in this bundle (exporter `--artifacts`).
     /// Absent in hash-only bundles; when absent, no `artifact_binding` is
     /// graded and nothing in the report implies bodies exist.
@@ -118,6 +131,13 @@ pub enum BundleError {
         file: String,
     },
     Seal(crate::seal::SealError),
+    /// The carried seal signature file is not a minisign signature. A
+    /// cryptographically WRONG signature is graded FAILED at verify time;
+    /// this is a file the reader cannot interpret at all.
+    SealSignature(MinisignError),
+    /// The manifest names a seal signature but no seal: a signature over
+    /// nothing that is present cannot be graded against anything.
+    SealSignatureWithoutSeal(String),
     /// A manifest `artifacts[].artifact_hash` label is not a 64-hex digest.
     MalformedArtifactHash(String),
     /// Two manifest artifact rows claim the same `artifact_hash`.
@@ -189,6 +209,10 @@ impl std::fmt::Display for BundleError {
                 write!(f, "manifest names session {manifest:?} but the file says {file:?}")
             }
             Self::Seal(e) => write!(f, "seal: {e}"),
+            Self::SealSignature(e) => write!(f, "seal signature: {e}"),
+            Self::SealSignatureWithoutSeal(p) => {
+                write!(f, "manifest names seal signature {p:?} but no seal document")
+            }
             Self::MalformedArtifactHash(h) => {
                 write!(
                     f,
@@ -262,6 +286,13 @@ pub struct Bundle {
     pub keyring: Keyring,
     pub sessions: Vec<SessionChain>,
     pub seal: Option<Seal>,
+    /// The seal file's exact bytes — what a minisign signature signs.
+    /// `Some` whenever `seal` is.
+    pub seal_bytes: Option<Vec<u8>>,
+    /// The carried detached signature over the seal file, when the manifest
+    /// names one. Parsed strictly at read; graded only under an out-of-band
+    /// key at verify.
+    pub seal_signature: Option<MinisignSignature>,
     /// Carried artifact bodies keyed by claimed `artifact_hash`. `None` for
     /// a hash-only bundle (no `artifacts` key in the manifest).
     pub artifacts: Option<ArtifactStore>,
@@ -616,12 +647,28 @@ impl Bundle {
             sessions.push(chain);
         }
 
-        let seal = match &manifest.seal {
-            None => None,
+        let (seal, seal_bytes) = match &manifest.seal {
+            None => (None, None),
             Some(rel) => {
                 let path = safe_join(root, rel)?;
                 let bytes = read_capped(&path, limits.seal_bytes, "seal file")?;
-                Some(Seal::from_slice(&bytes).map_err(BundleError::Seal)?)
+                let seal = Seal::from_slice(&bytes).map_err(BundleError::Seal)?;
+                (Some(seal), Some(bytes))
+            }
+        };
+
+        let seal_signature = match &manifest.seal_signature {
+            None => None,
+            Some(rel) => {
+                if seal.is_none() {
+                    return Err(BundleError::SealSignatureWithoutSeal(rel.clone()));
+                }
+                let path = safe_join(root, rel)?;
+                let bytes = read_capped(&path, limits.seal_sig_bytes, "seal signature file")?;
+                let text = String::from_utf8(bytes).map_err(|_| {
+                    BundleError::SealSignature(MinisignError::Malformed("file is not UTF-8 text".to_owned()))
+                })?;
+                Some(MinisignSignature::from_text(&text).map_err(BundleError::SealSignature)?)
             }
         };
 
@@ -685,12 +732,27 @@ impl Bundle {
             keyring,
             sessions,
             seal,
+            seal_bytes,
+            seal_signature,
             artifacts,
         })
     }
 
-    /// Verify every session and grade the seal.
+    /// Verify every session and grade the seal, with no seal public key:
+    /// the seal's minisign signature stays UNVERIFIABLE.
     pub fn verify(&self) -> BundleReport {
+        self.verify_with_seal_key(None)
+    }
+
+    /// Like [`Bundle::verify`], with an OUT-OF-BAND seal public key.
+    ///
+    /// The key in `check` is the only key the seal signature is ever graded
+    /// under. The seal's own `seal_public_key` field is never read — a
+    /// bundle naming its own trust root would be vouching for itself — and
+    /// the report's detail line says so. `check.signature`, when given,
+    /// overrides any signature carried in the bundle (for bundles exported
+    /// before the signature travelled in-band).
+    pub fn verify_with_seal_key(&self, check: Option<&SealKeyCheck<'_>>) -> BundleReport {
         let mut sessions = Vec::with_capacity(self.sessions.len());
         for chain in &self.sessions {
             let report = verify_session(chain, &self.keyring);
@@ -728,14 +790,18 @@ impl Bundle {
             });
         }
 
-        let seal = self.seal.as_ref().map(|s| SealOutcome {
-            seal_version: s.seal_version.clone(),
-            created_at: s.created_at.clone(),
-            sealed_by: s.sealed_by.clone(),
-            session_count: s.sessions.len(),
-            consistency: s.consistency(),
-            signature: Status::unverifiable("minisign signature not checked by this verifier (not implemented)"),
-            residual_disclosure: s.residual_disclosure.clone(),
+        let seal = self.seal.as_ref().map(|s| {
+            let (signature, signature_detail) = self.grade_seal_signature(check);
+            SealOutcome {
+                seal_version: s.seal_version.clone(),
+                created_at: s.created_at.clone(),
+                sealed_by: s.sealed_by.clone(),
+                session_count: s.sessions.len(),
+                consistency: s.consistency(),
+                signature,
+                signature_detail,
+                residual_disclosure: s.residual_disclosure.clone(),
+            }
         });
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
@@ -748,6 +814,73 @@ impl Bundle {
             verdict,
         }
     }
+
+    /// Grade the seal's minisign signature. Only called with a seal present.
+    ///
+    /// Deliberately separate from `seal_head_match`: that property says the
+    /// bundle agrees with the seal file beside it; this one says whether the
+    /// seal file itself is signed by the key the OPERATOR supplied. Two
+    /// facts, two lines (split on 2026-08-26; do not collapse them).
+    fn grade_seal_signature(&self, check: Option<&SealKeyCheck<'_>>) -> (Status, String) {
+        let Some(check) = check else {
+            return (
+                Status::unverifiable(
+                    "minisign signature not checked: no seal public key was supplied \
+                     (--seal-key; the key must arrive out of band, never from inside the bundle)",
+                ),
+                String::new(),
+            );
+        };
+        // The out-of-band signature, when given, wins over the carried one.
+        let (sig, source) = match (check.signature, &self.seal_signature) {
+            (Some(s), _) => (s, "signature supplied out of band"),
+            (None, Some(s)) => (s, "signature carried in the bundle"),
+            (None, None) => {
+                return (
+                    Status::unverifiable(
+                        "seal public key supplied, but there is no signature to check: \
+                         the bundle carries none and no --seal-sig was given",
+                    ),
+                    String::new(),
+                )
+            }
+        };
+        // The embedded-claim note is unconditional: the seal document always
+        // names a seal_public_key, and the reader must be told it played no
+        // part in this grade.
+        let detail = format!(
+            "{}, {} under minisign key id {}; key supplied out of band — the seal's embedded \
+             seal_public_key claim is ignored",
+            source,
+            sig.alg_label(),
+            check.key.key_id_hex()
+        );
+        let bytes = self.seal_bytes.as_deref().unwrap_or_default();
+        match sig.verify(check.key, bytes) {
+            Ok(()) => (Status::Verified, detail),
+            Err(e @ MinisignError::KeyIdMismatch { .. }) => {
+                // Not graded as tampering: under a different key than the
+                // signature names, nothing was checked — saying FAILED would
+                // accuse the evidence when the likely error is the operator's
+                // key choice.
+                (
+                    Status::unverifiable(format!("{e}; nothing was checked under the supplied key")),
+                    detail,
+                )
+            }
+            Err(e) => (Status::failed(e.to_string()), detail),
+        }
+    }
+}
+
+/// The out-of-band material for checking the seal's minisign signature.
+///
+/// The KEY is required and never comes from the bundle. The SIGNATURE is
+/// optional: when absent, the bundle-carried signature (if any) is graded.
+#[derive(Debug, Clone, Copy)]
+pub struct SealKeyCheck<'a> {
+    pub key: &'a MinisignPublicKey,
+    pub signature: Option<&'a MinisignSignature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -779,8 +912,15 @@ pub struct SealOutcome {
     pub session_count: usize,
     /// Merkle root recomputed from the listed sessions.
     pub consistency: Status,
-    /// The seal's own signature — not checked by Docket today.
+    /// The seal's minisign signature. UNVERIFIABLE unless a seal public key
+    /// was supplied out of band ([`SealKeyCheck`]); then VERIFIED or FAILED.
+    /// A distinct fact from every session's `seal_head_match`, deliberately.
     pub signature: Status,
+    /// Where the graded signature came from and which key checked it —
+    /// including that the seal's embedded key claim was ignored. Empty when
+    /// nothing was graded.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature_detail: String,
     pub residual_disclosure: String,
 }
 
@@ -797,14 +937,15 @@ pub struct BundleReport {
 }
 
 /// Weakest-link: any failure (including a failed seal head match, a failed
-/// artifact binding or an inconsistent seal) is FAILED; otherwise the
-/// least-authenticated session verdict. An empty bundle has nothing
-/// verified and is FAILED.
+/// artifact binding, an inconsistent seal or a failed seal signature) is
+/// FAILED; otherwise the least-authenticated session verdict. An empty
+/// bundle has nothing verified and is FAILED. A VERIFIED seal signature
+/// upgrades nothing: it authenticates the seal, not the sessions.
 fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> Verdict {
     if sessions.is_empty() {
         return Verdict::Failed;
     }
-    let seal_failed = seal.is_some_and(|s| s.consistency.is_failed());
+    let seal_failed = seal.is_some_and(|s| s.consistency.is_failed() || s.signature.is_failed());
     let any_failed = sessions.iter().any(|s| {
         s.report.verdict == Verdict::Failed
             || s.seal_head_match.as_ref().is_some_and(Status::is_failed)

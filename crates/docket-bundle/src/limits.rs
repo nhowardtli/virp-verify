@@ -58,6 +58,9 @@ pub struct Limits {
     /// The D-0 seal document. The 350-session reference seal is 57 KB, about
     /// 166 bytes per listed session, so this allows ~100,000 sessions.
     pub seal_bytes: u64,
+    /// The seal's detached `.minisig` file. A real one is ~330 bytes (two
+    /// base64 lines and two comment lines).
+    pub seal_sig_bytes: u64,
     /// One `sessions/<name>.json`. The largest real session is 2.0 MB.
     pub session_bytes: u64,
     /// One artifact body file. The largest real body is 2,020 bytes.
@@ -107,6 +110,7 @@ impl Default for Limits {
             manifest_bytes: 16 * MIB,
             keys_bytes: MIB,
             seal_bytes: 16 * MIB,
+            seal_sig_bytes: 64 * KIB,
             session_bytes: 64 * MIB,
             artifact_body_bytes: 16 * MIB,
             artifact_bytes_total: GIB,
@@ -136,6 +140,7 @@ impl Limits {
             manifest_bytes: u64::MAX,
             keys_bytes: u64::MAX,
             seal_bytes: u64::MAX,
+            seal_sig_bytes: u64::MAX,
             session_bytes: u64::MAX,
             artifact_body_bytes: u64::MAX,
             artifact_bytes_total: u64::MAX,

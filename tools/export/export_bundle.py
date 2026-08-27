@@ -4,7 +4,8 @@ export_bundle.py — export a Docket evidence bundle (directory form) from a
 VIRP chain database snapshot.
 
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> \
-        --sessions <id> [<id> ...] [--seal <seal-2026-08.json>] [--artifacts]
+        --sessions <id> [<id> ...] [--seal <seal-2026-08.json>] [--artifacts] \
+        [--keys <pubfile> [<pubfile> ...]] [--seal-sig <file.minisig>]
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> --all-sessions
     python3 export_bundle.py --db <snapshot.db> --list-sessions
 
@@ -50,6 +51,12 @@ sessions/*.json {session_id, entries[...], head?}
   signature     {signature_scheme: "ed25519-detached-v1", signing_key_id,
                 signature_hex}
 seal/<file>     the virp-seal/1 document, byte-for-byte.
+seal/<file>.minisig  (--seal-sig only) the detached minisign SIGNATURE over
+                the seal document, byte-for-byte, named in the manifest as
+                "seal_signature". The signature may travel in the bundle —
+                it is a claim the verifier grades. The PUBLIC KEY that
+                checks it never travels in the bundle: virp-verify takes it
+                out of band (--seal-key) or reports UNVERIFIABLE.
 artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
                 distinct artifact_hash, named in the manifest as
                 {"artifact_hash": "...", "path": "artifacts/..."}. The bytes
@@ -65,11 +72,24 @@ artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
                 a stored body that does not hash to its column value is
                 exported AS STORED for the verifier to fail — fixing it
                 here would be judging.
-keys.json       NOT produced. The chain schema has no table of public keys
-                (the D-1 public half lives as a file on the daemon host), so
-                there is nothing in a database to export. A bundle without
-                keys verifies as OPERATOR-ATTESTED — the expected outcome for
-                every pre-D-1 (Era 2) session.
+keys.json       produced ONLY with --keys, from PUBLIC key files the operator
+                supplies (the chain schema has no table of public keys; the
+                D-1 public half lives as a file on the daemon host, so there
+                is nothing in a database to export). Without --keys nothing
+                changes: no keys.json, no manifest pointer, and the bundle
+                verifies as OPERATOR-ATTESTED — the expected outcome for
+                every pre-D-1 (Era 2) session. With --keys, entries are
+                written deterministically (sorted by key_id, normalized
+                encoding) so the same inputs give byte-identical output;
+                key_id is DERIVED from the key bytes (sha256-raw-16), never
+                copied from a filename or label, and a stated id that does
+                not re-derive is an error. A key file containing secret or
+                seed material is refused: no private key material enters
+                Docket, ever.
+
+Reproducibility: SOURCE_DATE_EPOCH (unix seconds, the reproducible-builds
+convention) pins the manifest's created_at so two exports of the same inputs
+are byte-identical. Unset, created_at is the wall clock, as before.
 canonical_utf8  NOT produced. The database does not store canonical bytes;
                 the verifier rebuilds them from the twelve fields. Emitting a
                 rebuilt copy would be computing, not exporting.
@@ -441,6 +461,171 @@ def read_seal(seal_path):
     return data
 
 
+def read_seal_sig(seal_sig_path):
+    """Read the detached minisign signature verbatim. Sanity only: the file
+    must look like a .minisig (a base64 payload line decoding to 74 bytes
+    whose algorithm tag is minisign's Ed or ED). Whether it VERIFIES is
+    virp-verify's call, under a --seal-key supplied out of band."""
+    try:
+        with open(seal_sig_path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise ExportError(f"cannot read seal signature {seal_sig_path}: {e}") from e
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ExportError(f"seal signature {seal_sig_path} is not UTF-8 text (a .minisig is)") from e
+    payload = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith(("untrusted comment:", "trusted comment:"))
+    ]
+    if not payload:
+        raise ExportError(f"seal signature {seal_sig_path}: no base64 payload line found")
+    try:
+        blob = base64.b64decode(payload[0], validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ExportError(f"seal signature {seal_sig_path}: payload line is not base64: {e}") from e
+    if len(blob) != 74 or blob[:2] not in (b"Ed", b"ED"):
+        raise ExportError(
+            f"seal signature {seal_sig_path}: payload is not a minisign signature blob "
+            f"(74 bytes starting Ed/ED; found {len(blob)} bytes)"
+        )
+    return data
+
+
+# --- public keys (--keys) ---------------------------------------------------
+
+# key_id is sha256-raw-16: hex(SHA-256(raw 32 public-key bytes)[0:16]).
+KEY_ID_HEX_LEN = 32
+PUBLIC_KEY_HEX_LEN = 64
+
+# Top-level JSON field names that mean the file holds more than a public key.
+# Matched case-insensitively as substrings: no private key material enters
+# Docket, ever — refusing the whole file beats quietly copying out the public
+# half of something the operator should not be handing around.
+SECRET_FIELD_WORDS = ("secret", "seed", "private")
+
+
+def derive_key_id(public_key_hex):
+    """sha256-raw-16 over the raw key bytes. Derived, never copied: a
+    relabelled key file cannot change the id, and a stated id that does not
+    re-derive is caught by the caller."""
+    return hashlib.sha256(bytes.fromhex(public_key_hex)).hexdigest()[:KEY_ID_HEX_LEN]
+
+
+def read_public_key_file(path):
+    """One chain-signing PUBLIC key file -> a normalized keys.json entry.
+
+    Two accepted forms:
+      * raw hex: the file is exactly 64 hex characters (plus whitespace) —
+        the D-1 public half as it lives on the daemon host;
+      * JSON object: {"public_key_hex": "64 hex"} with optional "algorithm"
+        (any casing of ed25519 — the API serves "Ed25519", the bundle format
+        wants lowercase), optional stated "key_id"/"key_id_hex" (checked
+        against the derived id, never trusted), optional "comment".
+
+    Normalization on write: algorithm lowercase "ed25519", hex lowercase,
+    key_id always derived. Whether the bytes are a valid curve point is the
+    verifier's call, as with every other cell this exporter copies.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise ExportError(f"cannot read key file {path}: {e}") from e
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ExportError(f"key file {path} is not UTF-8 text (raw hex or JSON expected): {e}") from e
+
+    stripped = text.strip()
+    if HEX_RE.match(stripped) and len(stripped) == PUBLIC_KEY_HEX_LEN:
+        doc = {"public_key_hex": stripped}
+    else:
+        try:
+            doc = json.loads(stripped)
+        except ValueError as e:
+            raise ExportError(
+                f"key file {path} is neither {PUBLIC_KEY_HEX_LEN} hex characters nor valid JSON: {e}"
+            ) from e
+        if not isinstance(doc, dict):
+            raise ExportError(f"key file {path}: JSON form must be an object, found {type(doc).__name__}")
+
+    for name in doc:
+        if any(w in name.lower() for w in SECRET_FIELD_WORDS):
+            raise ExportError(
+                f"key file {path} carries field {name!r}, which names secret key material; "
+                f"--keys takes PUBLIC key files only and no private key material enters Docket"
+            )
+
+    pub = doc.get("public_key_hex")
+    if pub is None:
+        raise ExportError(f"key file {path}: no 'public_key_hex' field (and the file is not raw hex)")
+    if not isinstance(pub, str) or not HEX_RE.match(pub) or len(pub) != PUBLIC_KEY_HEX_LEN:
+        raise ExportError(
+            f"key file {path}: public_key_hex must be {PUBLIC_KEY_HEX_LEN} hex characters, found {pub!r}"
+        )
+    pub = pub.lower()
+
+    algorithm = doc.get("algorithm")
+    if algorithm is not None:
+        if not isinstance(algorithm, str) or algorithm.lower() != "ed25519":
+            raise ExportError(f"key file {path}: algorithm {algorithm!r} is not ed25519 (any casing accepted)")
+
+    key_id = derive_key_id(pub)
+    stated = doc.get("key_id", doc.get("key_id_hex"))
+    if stated is not None:
+        if not isinstance(stated, str) or stated.lower() != key_id:
+            raise ExportError(
+                f"key file {path}: stated key_id {stated!r} does not re-derive from the key bytes "
+                f"(derived {key_id}); the id is sha256-raw-16 over the raw public key and is never taken on faith"
+            )
+
+    entry = {"key_id": key_id, "algorithm": "ed25519", "public_key_hex": pub}
+    comment = doc.get("comment")
+    if comment is not None:
+        if not isinstance(comment, str):
+            raise ExportError(f"key file {path}: comment must be a string, found {type(comment).__name__}")
+        entry["comment"] = comment
+    return entry
+
+
+def read_public_keys(paths):
+    """All --keys files -> deterministic keys.json entries, sorted by key_id.
+    The same key supplied twice collapses to one entry; twice with differing
+    comments is a conflict this exporter refuses to resolve."""
+    by_id = {}
+    origin = {}
+    for path in paths:
+        entry = read_public_key_file(path)
+        kid = entry["key_id"]
+        if kid in by_id:
+            if by_id[kid] != entry:
+                raise ExportError(
+                    f"key files {origin[kid]} and {path} supply key_id {kid} with different metadata; "
+                    f"refusing to choose"
+                )
+            continue
+        by_id[kid] = entry
+        origin[kid] = path
+    return [by_id[kid] for kid in sorted(by_id)]
+
+
+def created_at_utc():
+    """The manifest's created_at. SOURCE_DATE_EPOCH (unix seconds) pins it so
+    a re-export is byte-identical; unset, the wall clock, as before."""
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    if epoch is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    else:
+        try:
+            now = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc)
+        except (ValueError, OverflowError, OSError) as e:
+            raise ExportError(f"SOURCE_DATE_EPOCH={epoch!r} is not a unix timestamp in seconds: {e}") from e
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def write_json(path, obj):
     data = json.dumps(obj, indent=2, ensure_ascii=True).encode("utf-8") + b"\n"
     with open(path, "xb") as f:
@@ -454,9 +639,23 @@ def write_bytes(path, data):
     return hashlib.sha256(data).hexdigest()
 
 
-def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False):
+def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False, key_paths=None, seal_sig_path=None):
     if os.path.lexists(out_dir):
         raise ExportError(f"output directory already exists: {out_dir} (refusing to overwrite; choose a new --out)")
+    if seal_sig_path and not seal_path:
+        raise ExportError("--seal-sig is a signature over the seal document; it needs --seal")
+    if seal_sig_path and os.path.basename(seal_sig_path) == os.path.basename(seal_path):
+        raise ExportError(
+            f"--seal and --seal-sig share the file name {os.path.basename(seal_path)!r}; "
+            f"both land in seal/ and would collide"
+        )
+
+    # Key files, the seal signature and created_at are resolved before the
+    # output directory exists, like every other input: a bad file leaves
+    # nothing on disk.
+    key_entries = read_public_keys(key_paths) if key_paths else None
+    seal_sig_bytes = read_seal_sig(seal_sig_path) if seal_sig_path else None
+    created_at = created_at_utc()
 
     conn = open_readonly(db_path)
     try:
@@ -504,15 +703,24 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts
         "docket_bundle_version": BUNDLE_VERSION,
         "chain_format": CHAIN_FORMAT,
         "producer": f"docket export_bundle.py {VERSION} (db={os.path.basename(db_path)})",
-        "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": created_at,
         "sessions": manifest_sessions,
     }
+    if key_entries is not None:
+        digest = write_json(os.path.join(out_dir, "keys.json"), {"keys": key_entries})
+        written.append(("keys.json", digest))
+        manifest["keys"] = "keys.json"
     if seal_bytes is not None:
         os.makedirs(os.path.join(out_dir, "seal"), exist_ok=False)
         rel = "seal/" + os.path.basename(seal_path)
         digest = write_bytes(os.path.join(out_dir, rel), seal_bytes)
         written.append((rel, digest))
         manifest["seal"] = rel
+        if seal_sig_bytes is not None:
+            rel = "seal/" + os.path.basename(seal_sig_path)
+            digest = write_bytes(os.path.join(out_dir, rel), seal_sig_bytes)
+            written.append((rel, digest))
+            manifest["seal_signature"] = rel
     if artifacts:
         os.makedirs(os.path.join(out_dir, "artifacts"), exist_ok=False)
         manifest["artifacts"] = []
@@ -527,7 +735,11 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts
     # Summary.
     print(f"exported {len(chains)} session(s) from {db_path} -> {out_dir}")
     d1 = "present" if present["chain_sig"] else "absent"
-    print(f"  D-1 signature columns: {d1}; keys.json: not produced (no public keys live in the database)")
+    if key_entries is None:
+        print(f"  D-1 signature columns: {d1}; keys.json: not produced (no public keys live in the database)")
+    else:
+        ids = ", ".join(e["key_id"] for e in key_entries)
+        print(f"  D-1 signature columns: {d1}; keys.json: {len(key_entries)} public key(s): {ids}")
     for chain in chains:
         head = chain.get("head")
         head_txt = f"head last_sequence={head['last_sequence']}" if head else "NO HEAD ROW"
@@ -563,6 +775,20 @@ def main(argv=None):
     p.add_argument("--all-sessions", action="store_true", help="export every session in the database")
     p.add_argument("--seal", help="path to a virp-seal/1 JSON document to copy into the bundle verbatim")
     p.add_argument(
+        "--seal-sig",
+        help="detached minisign signature (.minisig) over the --seal document, copied into the bundle "
+        "verbatim; the signature may travel in-band, the seal PUBLIC key never does (virp-verify "
+        "takes it out of band via --seal-key)",
+    )
+    p.add_argument(
+        "--keys",
+        nargs="+",
+        metavar="PUBFILE",
+        help="chain-signing PUBLIC key file(s) (raw 64-hex, or JSON with public_key_hex) to write into "
+        "keys.json; key_id is derived from the key bytes (sha256-raw-16), output is deterministic, and "
+        "a file carrying secret/seed material is refused",
+    )
+    p.add_argument(
         "--artifacts",
         action="store_true",
         help="also carry artifact BODIES (raw bytes from the artifacts table) so the verifier can grade "
@@ -587,7 +813,10 @@ def main(argv=None):
             p.error("--out is required (unless --list-sessions)")
         if bool(args.sessions) == bool(args.all_sessions):
             p.error("give exactly one of --sessions <id>... or --all-sessions")
-        return run_export(args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts)
+        return run_export(
+            args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts, args.keys,
+            args.seal_sig,
+        )
     except ExportError as e:
         print(f"export_bundle.py: error: {e}", file=sys.stderr)
         return 2

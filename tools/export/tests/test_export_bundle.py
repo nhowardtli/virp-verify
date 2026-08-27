@@ -28,6 +28,10 @@ APPENDIX_A = os.path.join(VECTORS, "fixtures-appendix-a.json")
 CHAIN_SIGNING = os.path.join(VECTORS, "chain-signing-v1.json")
 REAL_SEAL = os.path.join(VECTORS, "seal-2026-08.json")
 REAL_SEAL_SHA256 = "58309407ed41349611205d2ad1efd2c1df3b443e7cba6a89ad502699d4e93479"
+# TEST minisign signature over the vector seal by a THROWAWAY key, plus that
+# key's public half (vectors/README.md). NOT the operator's signature.
+TEST_MINISIG = os.path.join(VECTORS, "seal-2026-08.json.test.minisig")
+TEST_MINISIGN_PUB = os.path.join(VECTORS, "minisign-test.pub")
 UPSTREAM_SEAL = os.path.expanduser("<upstream-seal>/seal-2026-08.json")
 
 sys.path.insert(0, os.path.join(REPO, "tools", "export"))
@@ -184,7 +188,7 @@ def insert_head(conn, head, extra=None):
     )
 
 
-def build_fixture_db(path, d1_columns=False):
+def build_fixture_db(path, d1_columns=False, d1_hmac=""):
     """The synthetic snapshot:
 
     * Appendix A rows A–E with their REAL hashes and HMACs, plus the REAL head
@@ -196,7 +200,10 @@ def build_fixture_db(path, d1_columns=False):
     * docket-test:synthetic-1 = a complete 5-entry synthetic session with
       fake HMACs.
     * with d1_columns: the golden inv-lock-1 signed session from
-      chain-signing-v1.json in the D-1 columns.
+      chain-signing-v1.json in the D-1 columns. d1_hmac fills its HMAC
+      cells: "" (the default) exercises the exporter's copy-the-empty-string
+      fidelity and FAILS in the verifier; a 64-hex fake grades
+      OPERATOR-ATTESTED, letting the signature tier carry the verdict.
     """
     a = load_appendix_a()
     conn = sqlite3.connect(path)
@@ -230,11 +237,11 @@ def build_fixture_db(path, d1_columns=False):
         ent = vecs["inv-lock-entry-0"]
         hd = vecs["inv-lock-head-0"]
         fields = parse_canonical(ent["message_utf8"])
-        insert_entry(conn, fields, sha256_hex(canonical_bytes(fields)), "",
+        insert_entry(conn, fields, sha256_hex(canonical_bytes(fields)), d1_hmac,
                      {"chain_sig": ent["signature_hex"], "chain_sig_key_id": key_id})
         hf = json.loads(hd["message_utf8"])
         insert_head(conn, {"session_id": hf["session_id"], "last_sequence": hf["last_sequence"],
-                           "last_entry_hash": hf["last_entry_hash"], "head_hmac": "", "updated_at_ns": 2},
+                           "last_entry_hash": hf["last_entry_hash"], "head_hmac": d1_hmac, "updated_at_ns": 2},
                     {"head_sig": hd["signature_hex"], "head_sig_key_id": key_id})
     conn.commit()
     conn.close()
@@ -291,11 +298,12 @@ def find_virp_verify():
     return exe
 
 
-def verify(bundle_dir):
-    """Run the real verifier. Returns (exit_code, text_stdout, json_report)."""
+def verify(bundle_dir, *extra):
+    """Run the real verifier (extra flags first). Returns
+    (exit_code, text_stdout, json_report)."""
     exe = find_virp_verify()
-    text = subprocess.run([exe, bundle_dir], capture_output=True, text=True)
-    js = subprocess.run([exe, "--json", bundle_dir], capture_output=True, text=True)
+    text = subprocess.run([exe, *extra, bundle_dir], capture_output=True, text=True)
+    js = subprocess.run([exe, "--json", *extra, bundle_dir], capture_output=True, text=True)
     assert text.returncode == js.returncode, (text.returncode, js.returncode, js.stderr)
     report = json.loads(js.stdout) if js.stdout.strip().startswith("{") else None
     return text.returncode, text.stdout, report
@@ -309,8 +317,9 @@ def prop(sreport, name):
     return next(p for p in sreport["properties"] if p["name"] == name)["status"]
 
 
-def run_export(*args):
-    return subprocess.run([sys.executable, EXPORT] + list(args), capture_output=True, text=True)
+def run_export(*args, env=None):
+    full_env = None if env is None else {**os.environ, **env}
+    return subprocess.run([sys.executable, EXPORT] + list(args), capture_output=True, text=True, env=full_env)
 
 
 def sha256_file(path):
@@ -461,6 +470,43 @@ class ExportAndVerify(unittest.TestCase):
         self.assertEqual(code, 3, text)
         self.assertIn("seal_head_match        VERIFIED", text)
 
+    def test_seal_sig_is_carried_verbatim_and_verifies_under_an_out_of_band_key(self):
+        out = self.out("sealed-signed")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION,
+                       "--seal", REAL_SEAL, "--seal-sig", TEST_MINISIG)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        carried = os.path.join(out, "seal", "seal-2026-08.json.test.minisig")
+        self.assertEqual(sha256_file(carried), sha256_file(TEST_MINISIG))
+        with open(os.path.join(out, "manifest.json")) as f:
+            self.assertEqual(json.load(f)["seal_signature"], "seal/seal-2026-08.json.test.minisig")
+
+        # Without --seal-key: unchanged, UNVERIFIABLE even with the carried sig.
+        code, _, report = verify(out)
+        self.assertEqual(report["seal"]["signature"]["status"], "unverifiable")
+        self.assertEqual(code, 3)
+        # With the key OUT OF BAND: the carried signature verifies.
+        code, text, report = verify(out, "--seal-key", TEST_MINISIGN_PUB)
+        self.assertEqual(report["seal"]["signature"]["status"], "verified")
+        self.assertIn("seal_public_key claim is ignored", report["seal"]["signature_detail"])
+        self.assertEqual(code, 3, text)  # seal signature upgrades nothing
+
+    def test_seal_sig_without_seal_is_an_error(self):
+        r = run_export("--db", self.db, "--out", self.out("ss"), "--sessions", SYNTHETIC_SESSION,
+                       "--seal-sig", TEST_MINISIG)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("needs --seal", r.stderr)
+        self.assertFalse(os.path.exists(self.out("ss")))
+
+    def test_seal_sig_that_is_not_a_minisig_is_refused(self):
+        bad = os.path.join(self.tmp, "not-a-sig.minisig")
+        with open(bad, "w") as f:
+            f.write("untrusted comment: x\nAAAA\n")
+        r = run_export("--db", self.db, "--out", self.out("sb"), "--sessions", SYNTHETIC_SESSION,
+                       "--seal", REAL_SEAL, "--seal-sig", bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("not a minisign signature blob", r.stderr)
+        self.assertFalse(os.path.exists(self.out("sb")))
+
     def test_seal_that_is_not_virp_seal_1_is_refused(self):
         bad = os.path.join(self.tmp, "bad-seal.json")
         with open(bad, "w") as f:
@@ -567,6 +613,188 @@ class ExportAndVerify(unittest.TestCase):
             {"argparse", "base64", "binascii", "datetime", "hashlib", "json", "os", "re", "sqlite3", "sys",
              "urllib.parse"},
         )
+
+
+# --- public keys (--keys) ---------------------------------------------------
+
+
+def tree_hashes(root):
+    """relative path -> sha256 for every file under root."""
+    out = {}
+    for dirpath, _, files in os.walk(root):
+        for n in files:
+            p = os.path.join(dirpath, n)
+            out[os.path.relpath(p, root)] = sha256_file(p)
+    return out
+
+
+class KeysExport(unittest.TestCase):
+    """--keys: keys.json and the manifest pointer are deterministic, key_id
+    is derived from the key bytes (never copied from a label), casing is
+    normalized on write, secret material is refused, and a --keys export of
+    a signed session is CRYPTOGRAPHICALLY-VERIFIED by the real verifier."""
+
+    # A second real Ed25519 point (the public key embedded in the D-0 seal's
+    # minisign key), so multi-key exports stay verifier-readable. Its derived
+    # sha256-raw-16 id is fixed by the bytes. Used as ARBITRARY key material
+    # only: the seal key is NOT a chain-signing key in any real deployment,
+    # and nothing about key roles may be inferred from this fixture — the
+    # test needed any second valid curve point and this one was on hand.
+    SECOND_PUB = "71622502a38314f06dcb28253efd287110502b8b33847459c4509541db64e901"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-keys-")
+        self.db = os.path.join(self.tmp, "snapshot-d1.db")
+        # Non-empty (fake) HMAC cells: OPERATOR-ATTESTED, so the signature
+        # tier decides the verdict instead of a malformed-HMAC failure.
+        build_fixture_db(self.db, d1_columns=True, d1_hmac=fake_hmac("d1-signed"))
+        with open(CHAIN_SIGNING) as f:
+            self.cs = json.load(f)
+        self.pub = self.cs["test_key"]["public_key_hex"]
+        self.key_id = self.cs["test_key"]["key_id_hex"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def out(self, name):
+        return os.path.join(self.tmp, name)
+
+    def key_file(self, name, content):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as f:
+            if isinstance(content, str):
+                f.write(content)
+            else:
+                json.dump(content, f, indent=1)
+        return path
+
+    # ---- THE GATE: the real verifier accepts a --keys export as exit 0 -----
+
+    def test_gate_keys_export_of_signed_session_is_cryptographically_verified_exit_0(self):
+        pub_path = self.key_file("chain-signing.pub.json", {"algorithm": "Ed25519", "public_key_hex": self.pub})
+        out = self.out("bundle")
+        r = run_export("--db", self.db, "--out", out, "--sessions", "inv-lock-1", "--keys", pub_path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keys.json: 1 public key(s): " + self.key_id, r.stdout)
+        with open(os.path.join(out, "manifest.json")) as f:
+            self.assertEqual(json.load(f)["keys"], "keys.json")
+
+        code, text, report = verify(out)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(report["verdict"], "cryptographically_verified")
+        self.assertEqual(report["key_ids"], [self.key_id])
+        s = session_report(report, "inv-lock-1")
+        self.assertEqual(s["verdict"], "cryptographically_verified")
+        for p in ("head_signature", "entry_signatures", "session_key_binding"):
+            self.assertEqual(prop(s, p), "verified", p)
+        self.assertIn("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED", text)
+
+    # ---- determinism --------------------------------------------------------
+
+    def test_reexport_is_byte_identical_under_source_date_epoch(self):
+        key_a = self.key_file("a.pub.json", {"algorithm": "Ed25519", "public_key_hex": self.pub})
+        key_b = self.key_file("b.pub", self.SECOND_PUB + "\n")
+        env = {"SOURCE_DATE_EPOCH": "0"}
+        r1 = run_export("--db", self.db, "--out", self.out("one"), "--sessions", "inv-lock-1", SYNTHETIC_SESSION,
+                        "--keys", key_a, key_b, env=env)
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        # Same inputs, opposite --keys order: ordering is derived, not given.
+        r2 = run_export("--db", self.db, "--out", self.out("two"), "--sessions", "inv-lock-1", SYNTHETIC_SESSION,
+                        "--keys", key_b, key_a, env=env)
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        one, two = tree_hashes(self.out("one")), tree_hashes(self.out("two"))
+        self.assertEqual(one, two)
+        with open(os.path.join(self.out("one"), "manifest.json")) as f:
+            manifest = json.load(f)
+        self.assertEqual(manifest["created_at"], "1970-01-01T00:00:00Z")
+        with open(os.path.join(self.out("one"), "keys.json")) as f:
+            ids = [k["key_id"] for k in json.load(f)["keys"]]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), 2)
+        self.assertIn(self.key_id, ids)
+
+    # ---- key_id is derived, never copied ------------------------------------
+
+    def test_key_id_derives_from_bytes_not_from_filename_or_label(self):
+        # A raw-hex key file whose NAME lies about the id, in uppercase hex:
+        # the emitted entry must carry the derived id and lowercase bytes.
+        lying_name = self.key_file("00000000000000000000000000000000.pub", self.pub.upper() + "\n")
+        out = self.out("derived")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--keys", lying_name)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "keys.json")) as f:
+            entry = json.load(f)["keys"][0]
+        self.assertEqual(entry["key_id"], self.key_id)
+        self.assertEqual(entry["public_key_hex"], self.pub)
+
+    def test_stated_key_id_that_does_not_rederive_is_an_error(self):
+        bad = self.key_file("bad.json", {"public_key_hex": self.pub, "key_id": "00" * 16})
+        r = run_export("--db", self.db, "--out", self.out("x"), "--sessions", SYNTHETIC_SESSION, "--keys", bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("does not re-derive", r.stderr)
+        self.assertIn(self.key_id, r.stderr)  # the derived id is named
+        self.assertFalse(os.path.exists(self.out("x")))
+
+    def test_relabelled_key_collapses_to_one_entry(self):
+        # Same bytes as raw hex and as JSON, different file names: one key.
+        raw = self.key_file("k1.pub", self.pub)
+        js = self.key_file("k2.json", {"public_key_hex": self.pub.upper(), "key_id": self.key_id.upper()})
+        out = self.out("dedup")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--keys", raw, js)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "keys.json")) as f:
+            keys = json.load(f)["keys"]
+        self.assertEqual([k["key_id"] for k in keys], [self.key_id])
+
+    # ---- casing is normalized on write, and pinned --------------------------
+
+    def test_emitted_casing_is_lowercase_even_when_the_api_serves_Ed25519(self):
+        pub_path = self.key_file(
+            "api.json",
+            {"algorithm": "Ed25519", "public_key_hex": self.pub.upper(), "key_id_hex": self.key_id.upper(),
+             "comment": "as served"},
+        )
+        out = self.out("cased")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--keys", pub_path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "keys.json")) as f:
+            raw = f.read()
+        self.assertIn('"algorithm": "ed25519"', raw)
+        self.assertNotIn("Ed25519", raw)
+        entry = json.loads(raw)["keys"][0]
+        self.assertEqual(entry["public_key_hex"], self.pub)  # lowercase
+        self.assertEqual(entry["key_id"], self.key_id)  # lowercase, derived
+        self.assertEqual(entry["comment"], "as served")
+
+    def test_algorithm_other_than_ed25519_is_an_error(self):
+        bad = self.key_file("rsa.json", {"algorithm": "rsa", "public_key_hex": self.pub})
+        r = run_export("--db", self.db, "--out", self.out("alg"), "--sessions", SYNTHETIC_SESSION, "--keys", bad)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("'rsa' is not ed25519", r.stderr)
+        self.assertFalse(os.path.exists(self.out("alg")))
+
+    # ---- no private key material enters Docket ------------------------------
+
+    def test_key_file_carrying_secret_material_is_refused(self):
+        # The chain-signing vector's test_key object holds seed_hex and
+        # secret_key_hex_libsodium; handing it to --keys must be refused
+        # outright, not quietly stripped to its public half.
+        leak = self.key_file("test_key.json", self.cs["test_key"])
+        r = run_export("--db", self.db, "--out", self.out("leak"), "--sessions", SYNTHETIC_SESSION, "--keys", leak)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PUBLIC key files only", r.stderr)
+        self.assertFalse(os.path.exists(self.out("leak")))
+
+    # ---- without --keys, nothing changes ------------------------------------
+
+    def test_without_keys_flag_no_keys_json_and_no_manifest_pointer(self):
+        out = self.out("plain")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(out, "keys.json")))
+        with open(os.path.join(out, "manifest.json")) as f:
+            self.assertNotIn("keys", json.load(f))
+        self.assertIn("keys.json: not produced", r.stdout)
 
 
 # --- artifact bodies (--artifacts) -----------------------------------------

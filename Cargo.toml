@@ -12,6 +12,11 @@ publish = false
 sha2 = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 hex = "0.4"
+# Seal minisign verification only: BLAKE2b-512 for the prehashed ("ED")
+# signature kind, base64 for the minisign wire encoding. Both RustCrypto /
+# crates.io standards, MIT OR Apache-2.0 (inside the deny.toml allowlist).
+blake2 = "0.10"
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # docket view only (the local bundle viewer). Chosen over axum/tokio for its

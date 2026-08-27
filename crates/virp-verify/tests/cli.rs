@@ -314,3 +314,208 @@ fn seal_property_is_named_seal_head_match_not_seal_anchor() {
     // what keeps the head match from reading as an authenticity claim.
     assert_eq!(v["seal"]["signature"]["status"], "unverifiable");
 }
+
+// ---------------------------------------------------------------------------
+// Seal minisign signature (--seal-key / --seal-sig)
+// ---------------------------------------------------------------------------
+//
+// The vector .minisig is a TEST signature over the fixture seal's bytes by a
+// throwaway key (docket-bundle/tests/vectors/README.md) — not the operator's
+// signature. The seal key is not a chain-signing key; no role overlap.
+
+fn vectors() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docket-bundle/tests/vectors")
+}
+
+fn seal_key_arg() -> String {
+    vectors().join("minisign-test.pub").to_str().unwrap().to_owned()
+}
+
+/// The fixture bundle plus the vector .minisig carried in-band, with the
+/// manifest pointing at it.
+fn bundle_with_carried_seal_sig(name: &str) -> PathBuf {
+    let dir = variant(
+        name,
+        "manifest.json",
+        "\"seal\": \"seal/seal-2026-08.json\"",
+        "\"seal\": \"seal/seal-2026-08.json\",\n  \"seal_signature\": \"seal/seal-2026-08.json.test.minisig\"",
+    );
+    std::fs::copy(
+        vectors().join("seal-2026-08.json.test.minisig"),
+        dir.join("seal/seal-2026-08.json.test.minisig"),
+    )
+    .unwrap();
+    dir
+}
+
+/// A second throwaway TEST public key (different minisign key id). Nothing
+/// is signed under it; it exists to exercise the wrong-key grade.
+const OTHER_PUB: &str = "untrusted comment: minisign public key 8D04332BB3D74D83\n\
+                         RWSDTdezKzMEjc+b6zv5s53fBvOd+Bssq5m48CsB+SklPW9zu1O2NSPN\n";
+
+#[test]
+fn seal_key_with_carried_signature_verifies_and_names_the_ignored_embedded_claim() {
+    let dir = bundle_with_carried_seal_sig("sealsig-carried");
+    let (code, out, err) = run(&["--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("signature              VERIFIED"), "{out}");
+    assert!(out.contains("signature carried in the bundle"), "{out}");
+    assert!(out.contains("key supplied out of band"), "{out}");
+    assert!(out.contains("seal_public_key claim is ignored"), "{out}");
+    // The two seal facts stay two lines: the signature line must not have
+    // absorbed or replaced the per-session head match (split 2026-08-26).
+    assert!(out.contains("seal_head_match"), "{out}");
+    assert!(out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED"), "{out}");
+
+    let (jcode, json, _) = run(&["--json", "--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    assert_eq!(jcode, 0);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["seal"]["signature"]["status"], "verified");
+    assert!(v["seal"]["signature_detail"]
+        .as_str()
+        .unwrap()
+        .contains("seal_public_key claim is ignored"));
+}
+
+#[test]
+fn seal_sig_supplied_out_of_band_verifies_without_a_carried_signature() {
+    // Unmodified fixture: no seal_signature in the manifest.
+    let sig = vectors().join("seal-2026-08.json.test.minisig");
+    let (code, out, _) = run(&[
+        "--seal-key",
+        &seal_key_arg(),
+        "--seal-sig",
+        sig.to_str().unwrap(),
+        fixture().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("signature              VERIFIED"), "{out}");
+    assert!(out.contains("signature supplied out of band"), "{out}");
+}
+
+#[test]
+fn tampered_seal_fails_the_signature_and_the_overall_verdict_exit_1() {
+    // Flip seal content under a carried signature: the minisign check must
+    // FAIL and drag the overall verdict down, even though every session
+    // still verifies. (`sealed_by` is outside merkle/sessions, so seal
+    // consistency still VERIFIES — the signature alone catches this edit.)
+    let dir = bundle_with_carried_seal_sig("sealsig-tampered");
+    let seal_path = dir.join("seal/seal-2026-08.json");
+    let text = std::fs::read_to_string(&seal_path).unwrap();
+    let tampered = text.replace("Nathan Howard", "Someone Else");
+    assert_ne!(text, tampered);
+    std::fs::write(&seal_path, tampered).unwrap();
+
+    let (code, out, _) = run(&["--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("signature              FAILED"), "{out}");
+    assert!(out.contains("consistency            VERIFIED"), "{out}");
+    assert!(out.contains("OVERALL VERDICT: FAILED"), "{out}");
+    // The sessions themselves still verified — the seal is what failed.
+    assert!(out.contains("head_signature         VERIFIED"), "{out}");
+}
+
+#[test]
+fn wrong_seal_key_is_unverifiable_with_both_ids_named_not_failed() {
+    let dir = bundle_with_carried_seal_sig("sealsig-wrongkey");
+    let other = dir.join("other.pub");
+    std::fs::write(&other, OTHER_PUB).unwrap();
+    let (code, out, _) = run(&["--seal-key", other.to_str().unwrap(), dir.to_str().unwrap()]);
+    // Wrong key = nothing checked, not tampering: verdict path untouched.
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
+    // Both ids in raw stored-byte order (minisign's comment line shows the
+    // same 8 bytes reversed; Docket prints them one way, consistently).
+    assert!(out.contains("592902d0ec4a755a"), "{out}"); // id the signature names
+    assert!(out.contains("834dd7b32b33048d"), "{out}"); // id of the supplied key
+    assert!(out.contains("nothing was checked under the supplied key"), "{out}");
+}
+
+#[test]
+fn without_seal_key_output_is_unverifiable_as_before_even_with_a_carried_sig() {
+    let dir = bundle_with_carried_seal_sig("sealsig-nokey");
+    let (code, out, _) = run(&[dir.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
+    assert!(
+        out.contains("must arrive out of band, never from inside the bundle"),
+        "{out}"
+    );
+    assert!(!out.contains("signature              VERIFIED"), "{out}");
+}
+
+#[test]
+fn seal_key_without_any_signature_is_unverifiable_and_says_what_is_missing() {
+    // Unmodified fixture (no carried sig), key supplied, no --seal-sig.
+    let (code, out, _) = run(&["--seal-key", &seal_key_arg(), fixture().to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
+    assert!(out.contains("no signature to check"), "{out}");
+    assert!(out.contains("no --seal-sig was given"), "{out}");
+}
+
+#[test]
+fn seal_flag_usage_errors_exit_2() {
+    // --seal-sig without --seal-key can check nothing: usage error.
+    let sig = vectors().join("seal-2026-08.json.test.minisig");
+    let (code, _, err) = run(&["--seal-sig", sig.to_str().unwrap(), fixture().to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--seal-sig is only meaningful with --seal-key"), "{err}");
+
+    // Unreadable / malformed operator files: exit 2, nothing verified.
+    let (code, _, err) = run(&["--seal-key", "/nonexistent.pub", fixture().to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--seal-key"), "{err}");
+    let (code, _, err) = run(&[
+        "--seal-key",
+        &seal_key_arg(),
+        "--seal-sig",
+        &seal_key_arg(), // a public key is not a signature
+        fixture().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--seal-sig"), "{err}");
+    assert!(err.contains("not a minisign document"), "{err}");
+}
+
+#[test]
+fn carried_seal_signature_that_is_garbage_is_unreadable_exit_2() {
+    // A carried file the reader cannot interpret at all is UNREADABLE —
+    // distinct from a parseable signature that fails cryptographically.
+    let dir = bundle_with_carried_seal_sig("sealsig-garbage");
+    std::fs::write(dir.join("seal/seal-2026-08.json.test.minisig"), "not a minisig\n").unwrap();
+    let (code, _, err) = run(&[dir.to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("seal signature"), "{err}");
+}
+
+#[test]
+fn manifest_seal_signature_without_a_seal_is_unreadable_exit_2() {
+    let dir = variant(
+        "sealsig-noseal",
+        "manifest.json",
+        "\"seal\": \"seal/seal-2026-08.json\"",
+        "\"seal_signature\": \"seal/seal-2026-08.json.test.minisig\"",
+    );
+    std::fs::copy(
+        vectors().join("seal-2026-08.json.test.minisig"),
+        dir.join("seal/seal-2026-08.json.test.minisig"),
+    )
+    .unwrap();
+    let (code, _, err) = run(&[dir.to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("but no seal document"), "{err}");
+}
+
+#[test]
+fn seal_key_against_a_bundle_with_no_seal_says_it_checked_nothing() {
+    let dir = variant(
+        "sealsig-sealless",
+        "manifest.json",
+        "\"seal\": \"seal/seal-2026-08.json\"",
+        "\"x_no_seal\": null",
+    );
+    let (code, out, _) = run(&["--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("the supplied --seal-key checked nothing"), "{out}");
+}

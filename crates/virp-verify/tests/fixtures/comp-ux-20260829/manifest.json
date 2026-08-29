@@ -1,0 +1,47 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=chain.db)",
+  "created_at": "2026-08-29T23:06:49Z",
+  "sessions": [
+    {
+      "session_id": "camera:comp-ux:2026-08-29",
+      "path": "sessions/camera_comp-ux_2026-08-29.json"
+    }
+  ],
+  "keys": "keys.json",
+  "artifacts": [
+    {
+      "artifact_hash": "081dc8590de5e961f26852db829d2c3e0566ca9be0a7895931923875b3f4f878",
+      "path": "artifacts/081dc8590de5e961f26852db829d2c3e0566ca9be0a7895931923875b3f4f878"
+    },
+    {
+      "artifact_hash": "41ca4ac2f71669a93d5d0626d7bd54c3f835b6f43da625ef162e45b83ffe71d0",
+      "path": "artifacts/41ca4ac2f71669a93d5d0626d7bd54c3f835b6f43da625ef162e45b83ffe71d0"
+    },
+    {
+      "artifact_hash": "434986f903cff0c6da8caf40840287005ee885d8a7f8f5daea4857e0a8157674",
+      "path": "artifacts/434986f903cff0c6da8caf40840287005ee885d8a7f8f5daea4857e0a8157674"
+    },
+    {
+      "artifact_hash": "84233a0b700bcef550ac4c76327334789862b1a660a0214bcc10b3b7baa8022b",
+      "path": "artifacts/84233a0b700bcef550ac4c76327334789862b1a660a0214bcc10b3b7baa8022b"
+    },
+    {
+      "artifact_hash": "848701ec5592197d731cd705baea8f9908360883147d928a7c81221bbacc6f54",
+      "path": "artifacts/848701ec5592197d731cd705baea8f9908360883147d928a7c81221bbacc6f54"
+    },
+    {
+      "artifact_hash": "989b2b9f246a81220d2e875479c7e6d6ca468e797964bdd083490c0579d59e0b",
+      "path": "artifacts/989b2b9f246a81220d2e875479c7e6d6ca468e797964bdd083490c0579d59e0b"
+    },
+    {
+      "artifact_hash": "b1d36e5df6ed6fcfeecb4bb82b12c51d3092b2023a28e0e390170bf27b0be4ed",
+      "path": "artifacts/b1d36e5df6ed6fcfeecb4bb82b12c51d3092b2023a28e0e390170bf27b0be4ed"
+    },
+    {
+      "artifact_hash": "eb1d1775f36934310a0a9ebfa5b279af4c075dacbff6a5f4e1d376a838307e72",
+      "path": "artifacts/eb1d1775f36934310a0a9ebfa5b279af4c075dacbff6a5f4e1d376a838307e72"
+    }
+  ]
+}

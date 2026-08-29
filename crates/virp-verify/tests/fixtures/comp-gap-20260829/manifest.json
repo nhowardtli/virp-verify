@@ -1,0 +1,47 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=chain.db)",
+  "created_at": "2026-08-29T23:06:49Z",
+  "sessions": [
+    {
+      "session_id": "camera:comp-gap:2026-08-29",
+      "path": "sessions/camera_comp-gap_2026-08-29.json"
+    }
+  ],
+  "keys": "keys.json",
+  "artifacts": [
+    {
+      "artifact_hash": "1ee458d7fd93fdcdac34e821840325d799d955fe4c18ea60af51ea42af9e5c12",
+      "path": "artifacts/1ee458d7fd93fdcdac34e821840325d799d955fe4c18ea60af51ea42af9e5c12"
+    },
+    {
+      "artifact_hash": "5d869d6c533bf330399e4448118508a27bc4e27bec233bbe2c2ae71e95b94392",
+      "path": "artifacts/5d869d6c533bf330399e4448118508a27bc4e27bec233bbe2c2ae71e95b94392"
+    },
+    {
+      "artifact_hash": "74a9a10c7c631e3dd85b08911a45da9b6e01ba7d4afe6fbcd93e236c96c704c9",
+      "path": "artifacts/74a9a10c7c631e3dd85b08911a45da9b6e01ba7d4afe6fbcd93e236c96c704c9"
+    },
+    {
+      "artifact_hash": "90f192697ff31c5d9bda307e1bc64ffa7019b4697afc85298394a25fb45da1cb",
+      "path": "artifacts/90f192697ff31c5d9bda307e1bc64ffa7019b4697afc85298394a25fb45da1cb"
+    },
+    {
+      "artifact_hash": "b6fb9f5079d99cb5657e9aa199ae9c3c817f6fd3b7d2b5cc16b8821f97ae0a38",
+      "path": "artifacts/b6fb9f5079d99cb5657e9aa199ae9c3c817f6fd3b7d2b5cc16b8821f97ae0a38"
+    },
+    {
+      "artifact_hash": "c743050e5a703f29ae3af0bb80eaa9529777c56c60cff5c714c66c80cb6d7cd2",
+      "path": "artifacts/c743050e5a703f29ae3af0bb80eaa9529777c56c60cff5c714c66c80cb6d7cd2"
+    },
+    {
+      "artifact_hash": "ec789b5596159b1832bc1fd8bae0e0a4c69dd9712310f9256022c51aeda878af",
+      "path": "artifacts/ec789b5596159b1832bc1fd8bae0e0a4c69dd9712310f9256022c51aeda878af"
+    },
+    {
+      "artifact_hash": "ee1437e4ff20646486d446a2ed03c4313cbaf7851fdd96e118273642d2bdf9bc",
+      "path": "artifacts/ee1437e4ff20646486d446a2ed03c4313cbaf7851fdd96e118273642d2bdf9bc"
+    }
+  ]
+}

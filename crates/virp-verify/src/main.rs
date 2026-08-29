@@ -344,6 +344,38 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
                 .trust_source
                 .map_or("none — no key was available for this session", |s| s.label())
         );
+        // Capture completeness: a separate axis from every property above.
+        // It never feeds the verdict; the verdict never implies it.
+        let cc = &s.capture_completeness;
+        let extra = cc.grade.extra().map(|e| format!(" — {e}")).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {:<22} {:<38} {}{extra}",
+            "capture_completeness",
+            cc.grade.label(),
+            cc.detail
+        );
+        for o in &cc.outages {
+            let _ = writeln!(
+                out,
+                "      {:<12} seq {}→{}  hole {:.1} s  gap record: {}",
+                o.class,
+                o.after_seq,
+                o.seq,
+                o.hole_ms as f64 / 1000.0,
+                o.gap_reason.as_deref().unwrap_or("none")
+            );
+        }
+        for o in &cc.overlaps {
+            let _ = writeln!(
+                out,
+                "      {:<12} seq {}→{}  windows overlap {:.1} s (no time uncovered)",
+                "overlap",
+                o.after_seq,
+                o.seq,
+                o.overlap_ms as f64 / 1000.0
+            );
+        }
         let _ = writeln!(out, "  verdict: {}", r.verdict.label());
         let _ = writeln!(out);
     }
@@ -370,6 +402,35 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         let _ = writeln!(out);
     }
 
+    // Boundary results: computed from the evidence, not stated as copy, so
+    // the report changes when the evidence changes rather than when the
+    // wording is edited. Questions with answers — not verdict tiers.
+    let _ = writeln!(
+        out,
+        "BOUNDARY RESULTS (questions this verifier answers about its own limits, computed from this bundle):"
+    );
+    let b = &report.boundary;
+    let _ = writeln!(
+        out,
+        "  {:<28} {:<28} {}",
+        "source_device_established",
+        b.source_device_established.answer.label(),
+        b.source_device_established.detail
+    );
+    let cc_extra = b
+        .capture_completeness
+        .grade
+        .extra()
+        .map(|e| format!(" — {e}"))
+        .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "  {:<28} {:<28} {}{cc_extra}",
+        "capture_completeness",
+        b.capture_completeness.grade.label(),
+        b.capture_completeness.detail
+    );
+    let _ = writeln!(out);
     let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict.label());
     let _ = writeln!(out);
     let _ = writeln!(out, "What this verdict means:");
@@ -399,6 +460,30 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     let _ = writeln!(
         out,
         "  MISMATCH            the examiner pinned keys and this session's signatures do not verify under any of them"
+    );
+    let _ = writeln!(
+        out,
+        "What capture completeness means (a separate axis from cryptographic verification — chain contiguity proves no missing sequence number, not no missing time):"
+    );
+    let _ = writeln!(
+        out,
+        "  CONTINUOUS                 every uncovered interval between capture windows is within the producer's own signed capture policy"
+    );
+    let _ = writeln!(
+        out,
+        "  INTERRUPTED / ACCOUNTED    an interval is not covered, and a signed gap record or the signed policy's stated tolerance accounts for it. Accounted for is not complete."
+    );
+    let _ = writeln!(
+        out,
+        "  INTERRUPTED / UNEXPLAINED  an interval is not covered, no signed gap record explains it, and it exceeds the signed policy"
+    );
+    let _ = writeln!(
+        out,
+        "  UNVERIFIABLE               the evidence does not carry what the check needs (no bodies carried, or camera_segment/1 records with no declared cadence)"
+    );
+    let _ = writeln!(
+        out,
+        "A report with no boundary results comes from a verifier that does not implement these checks (NOT GRADED) — a different statement from UNVERIFIABLE, which is graded from the evidence."
     );
     // Without --seal-key this line is verbatim what it always was — the
     // docket viewer's page asserts parity with it (crates/docket/tests).

@@ -16,7 +16,7 @@ const USAGE: &str = "\
 virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
-    virp-verify [--json] [--max-sessions N] [--max-entries N]
+    virp-verify [--json] [--pin FILE]... [--max-sessions N] [--max-entries N]
                 [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
@@ -24,6 +24,13 @@ ARGS:
 
 OPTIONS:
     --json               print the full report as JSON instead of text
+    --pin FILE           examiner-trusted PUBLIC key(s), docket keys.json format
+                         (what `export --keys` emits). Repeatable. Must arrive
+                         OUT OF BAND: only a pinned key can establish who signed
+                         (SIGNER TRUST: PINNED). A bundle's own keys.json still
+                         checks signatures, but proves internal consistency
+                         only — anyone can generate a keypair, sign fabricated
+                         evidence, and ship the public half alongside.
     --max-sessions N     reject a bundle listing more than N sessions (default 10000)
     --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
     --seal-key FILE      minisign PUBLIC key to check the seal's signature under.
@@ -46,12 +53,16 @@ RESOURCE LIMITS:
     exceeds them.
 
 EXIT CODES (deliberately NOT collapsed into pass/fail):
-    0   CRYPTOGRAPHICALLY-VERIFIED  every session signed and verified under a supplied public key
+    0   CRYPTOGRAPHICALLY-VERIFIED  every session signed and verified under an examiner-pinned
+                                    public key: cryptography AND signer identity both held
     1   FAILED                      at least one property failed: tampering or corruption
     2   bundle unreadable / usage error (nothing was verified)
     3   OPERATOR-ATTESTED           consistent, but authenticity rests on material this
                                     verifier cannot check (operator HMAC and/or an unknown key)
     4   CONSISTENT-UNAUTHENTICATED  consistent, and nothing at all attests authenticity
+    5   CRYPTOGRAPHICALLY-CONSISTENT  every signature verifies, but only under a key that
+                                    establishes no identity (bundle-provided, or outside the
+                                    examiner's pins): the cryptography held, the identity did not
 
 virp-verify never signs, never holds a private key, and never executes anything.
 ";
@@ -60,6 +71,7 @@ fn main() -> ExitCode {
     let mut json = false;
     let mut path: Option<PathBuf> = None;
     let mut limits = Limits::default();
+    let mut pin_paths: Vec<PathBuf> = Vec::new();
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
     let mut pending: Option<&'static str> = None;
@@ -68,6 +80,10 @@ fn main() -> ExitCode {
         // so that a flag's value is never mistaken for a bundle path.
         if let Some(flag) = pending.take() {
             match flag {
+                "--pin" => {
+                    pin_paths.push(PathBuf::from(&arg));
+                    continue;
+                }
                 "--seal-key" => {
                     seal_key_path = Some(PathBuf::from(&arg));
                     continue;
@@ -91,12 +107,13 @@ fn main() -> ExitCode {
         }
         match arg.to_str() {
             Some("--json") => json = true,
-            Some(f @ ("--max-sessions" | "--max-entries" | "--seal-key" | "--seal-sig")) => {
+            Some(f @ ("--max-sessions" | "--max-entries" | "--pin" | "--seal-key" | "--seal-sig")) => {
                 // Borrowed from USAGE rather than from `arg`, so the flag name
                 // outlives this iteration without an allocation.
                 pending = Some(match f {
                     "--max-sessions" => "--max-sessions",
                     "--max-entries" => "--max-entries",
+                    "--pin" => "--pin",
                     "--seal-key" => "--seal-key",
                     _ => "--seal-sig",
                 });
@@ -133,8 +150,19 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Out-of-band seal material is read BEFORE the bundle: a bad operator
-    // file is a usage problem (exit 2), never a verdict about the evidence.
+    // Out-of-band operator material (pins, seal key/sig) is read BEFORE the
+    // bundle: a bad operator file is a usage problem (exit 2), never a
+    // verdict about the evidence.
+    let mut pins = Vec::new();
+    for p in &pin_paths {
+        match docket_bundle::read_key_file(p, &limits) {
+            Ok(keys) => pins.extend(keys),
+            Err(e) => {
+                eprintln!("virp-verify: --pin: {}: {e}", p.display());
+                return ExitCode::from(2);
+            }
+        }
+    }
     let seal_key = match &seal_key_path {
         None => None,
         Some(p) => match read_minisign(p, "--seal-key", MinisignPublicKey::from_text) {
@@ -150,7 +178,7 @@ fn main() -> ExitCode {
         },
     };
 
-    let bundle = match Bundle::read_dir_with_limits(&path, &limits) {
+    let mut bundle = match Bundle::read_dir_with_limits(&path, &limits) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("virp-verify: cannot read bundle {}: {e}", path.display());
@@ -158,6 +186,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Pins go into the same keyring as the bundle's keys, tagged with their
+    // provenance; a pinned key outranks a bundle copy of itself.
+    for pk in pins {
+        bundle.keyring.insert_pinned(pk);
+    }
     let check = seal_key.as_ref().map(|key| SealKeyCheck {
         key,
         signature: seal_sig.as_ref(),
@@ -202,6 +235,7 @@ fn exit_code(v: Verdict) -> u8 {
         Verdict::Failed => 1,
         Verdict::OperatorAttestedUnverifiable => 3,
         Verdict::ConsistentUnauthenticated => 4,
+        Verdict::CryptographicallyConsistent => 5,
     }
 }
 
@@ -235,12 +269,28 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             "keys:    none supplied — KEYLESS tier only; signatures cannot be checked"
         );
     } else {
-        let _ = writeln!(
-            out,
-            "keys:    {} public key(s): {}",
-            report.key_ids.len(),
-            report.key_ids.join(", ")
-        );
+        if !report.bundle_key_ids.is_empty() {
+            let _ = writeln!(
+                out,
+                "keys:    {} bundle-provided key(s): {} — carried inside the bundle; can establish \
+                 internal consistency, never identity",
+                report.bundle_key_ids.len(),
+                report.bundle_key_ids.join(", ")
+            );
+        }
+        if report.pinned_key_ids.is_empty() {
+            let _ = writeln!(
+                out,
+                "pinned:  none supplied — signer trust cannot be PINNED without an examiner key (--pin)"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "pinned:  {} examiner-supplied key(s): {}",
+                report.pinned_key_ids.len(),
+                report.pinned_key_ids.join(", ")
+            );
+        }
     }
     let _ = writeln!(out, "secrets: none — this verifier holds no K_chain and no private key");
     let _ = writeln!(out);
@@ -271,6 +321,29 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
                 .unwrap_or_default();
             out.push_str(&status_line("artifact_binding", binding, &detail));
         }
+        // The two signer axes, rendered separately and never merged: whether
+        // the cryptography held, and whether the key that checked it
+        // establishes who signed.
+        out.push_str(&status_line(
+            "signature_validity",
+            &r.signer.signature_validity,
+            "summary of head_signature, session_key_binding, entry_signatures",
+        ));
+        let _ = writeln!(
+            out,
+            "  {:<22} {:<38} {}",
+            "signer_trust",
+            r.signer.trust.label(),
+            r.signer.detail
+        );
+        let _ = writeln!(
+            out,
+            "  {:<22} {}",
+            "trust_source",
+            r.signer
+                .trust_source
+                .map_or("none — no key was available for this session", |s| s.label())
+        );
         let _ = writeln!(out, "  verdict: {}", r.verdict.label());
         let _ = writeln!(out);
     }
@@ -311,6 +384,22 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     let _ = writeln!(out, "  ABSENT              the property is not present in the evidence");
     let _ = writeln!(out, "  FAILED              checked and wrong");
+    let _ = writeln!(
+        out,
+        "What signer trust means (a separate axis from signature validity):"
+    );
+    let _ = writeln!(
+        out,
+        "  PINNED              the key that verified the signatures was supplied by the examiner out of band (--pin) and matches"
+    );
+    let _ = writeln!(
+        out,
+        "  UNESTABLISHED       the only key available came from inside the bundle being examined; valid signatures prove internal consistency, not who produced it"
+    );
+    let _ = writeln!(
+        out,
+        "  MISMATCH            the examiner pinned keys and this session's signatures do not verify under any of them"
+    );
     // Without --seal-key this line is verbatim what it always was — the
     // docket viewer's page asserts parity with it (crates/docket/tests).
     // With the key, claiming the minisign signature went unchecked would be

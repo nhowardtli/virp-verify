@@ -10,7 +10,7 @@ use common::*;
 use docket_bundle::verify::property;
 use docket_bundle::{
     verify_session, ChainEntry, ChainHead, DetachedSignature, EntryFields, HeadFields, Keyring, PublicKey,
-    SessionChain, Status, Verdict,
+    SessionChain, SignerTrust, Status, TrustSource, Verdict,
 };
 
 const SCHEME: &str = "ed25519-detached-v1";
@@ -27,7 +27,7 @@ fn test_pubkey() -> PublicKey {
 
 fn keyring_with_test_key() -> Keyring {
     let mut k = Keyring::new();
-    k.insert(test_pubkey());
+    k.insert_pinned(test_pubkey());
     k
 }
 
@@ -169,19 +169,125 @@ fn golden_signed_session_without_key_is_unverifiable_not_verified() {
 fn golden_signed_session_with_wrong_key_in_keyring_is_unverifiable() {
     // RFC 8032 key: valid, but not the session's key_id → unverifiable (soft), not failed.
     let mut k = Keyring::new();
-    k.insert(PublicKey::from_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a").unwrap());
+    k.insert_pinned(PublicKey::from_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a").unwrap());
     let r = verify_session(&inv_lock_session(), &k);
     assert!(matches!(
         status_of(&r, property::HEAD_SIGNATURE),
         Status::Unverifiable { .. }
     ));
     assert_eq!(r.verdict, Verdict::OperatorAttestedUnverifiable);
+    // The examiner stated an expectation and the session's signer is not in
+    // it: MISMATCH, with no key available for the check.
+    assert_eq!(r.signer.trust, SignerTrust::Mismatch);
+    assert_eq!(r.signer.trust_source, None);
+}
+
+// ---------------------------------------------------------------------------
+// The signer-trust axis: validity and trust are separate results
+// ---------------------------------------------------------------------------
+
+fn keyring_with_bundle_key() -> Keyring {
+    let mut k = Keyring::new();
+    k.insert_bundle(test_pubkey());
+    k
+}
+
+#[test]
+fn bundle_provided_key_verifies_but_demotes_to_cryptographically_consistent() {
+    let r = verify_session(&inv_lock_session(), &keyring_with_bundle_key());
+    // Axis 1: the cryptography held, exactly as under a pinned key.
+    assert_eq!(status_of(&r, property::HEAD_SIGNATURE), &Status::Verified);
+    assert_eq!(status_of(&r, property::ENTRY_SIGNATURES), &Status::Verified);
+    assert_eq!(r.signer.signature_validity, Status::Verified);
+    // Axis 2: no identity was established.
+    assert_eq!(r.signer.trust, SignerTrust::Unestablished);
+    assert_eq!(r.signer.trust_source, Some(TrustSource::BundleProvidedKey));
+    // And the top line says so: NOT cryptographically verified.
+    assert_eq!(r.verdict, Verdict::CryptographicallyConsistent);
+}
+
+#[test]
+fn pinned_key_establishes_trust_and_the_full_verdict() {
+    let r = verify_session(&inv_lock_session(), &keyring_with_test_key());
+    assert_eq!(r.signer.signature_validity, Status::Verified);
+    assert_eq!(r.signer.trust, SignerTrust::Pinned);
+    assert_eq!(r.signer.trust_source, Some(TrustSource::ExaminerTrustStore));
+    assert_eq!(r.verdict, Verdict::CryptographicallyVerified);
+}
+
+#[test]
+fn pinned_key_beside_bundle_copy_stays_pinned() {
+    // The bundle carries the same key the examiner pinned: the examiner's
+    // provenance wins, in either insertion order.
+    for pinned_first in [true, false] {
+        let mut k = Keyring::new();
+        if pinned_first {
+            k.insert_pinned(test_pubkey());
+            k.insert_bundle(test_pubkey());
+        } else {
+            k.insert_bundle(test_pubkey());
+            k.insert_pinned(test_pubkey());
+        }
+        assert_eq!(k.len(), 1);
+        let r = verify_session(&inv_lock_session(), &k);
+        assert_eq!(r.signer.trust, SignerTrust::Pinned, "pinned_first={pinned_first}");
+        assert_eq!(r.verdict, Verdict::CryptographicallyVerified);
+    }
+}
+
+#[test]
+fn wrong_pin_beside_the_bundle_key_is_mismatch_with_validity_intact() {
+    // The bundle's own key checks the signatures (validity VERIFIED); the
+    // examiner pinned someone else. MISMATCH, not UNESTABLISHED — and the
+    // verdict is demoted, never upgraded, by the pin.
+    let mut k = keyring_with_bundle_key();
+    k.insert_pinned(PublicKey::from_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a").unwrap());
+    let r = verify_session(&inv_lock_session(), &k);
+    assert_eq!(r.signer.signature_validity, Status::Verified);
+    assert_eq!(r.signer.trust, SignerTrust::Mismatch);
+    assert_eq!(r.signer.trust_source, Some(TrustSource::BundleProvidedKey));
+    assert_eq!(r.verdict, Verdict::CryptographicallyConsistent);
+}
+
+#[test]
+fn tampered_signature_under_a_pinned_key_fails_and_leaves_other_properties_verified() {
+    // Failure independence across the axes: a corrupted signature FAILS
+    // validity (and trust cannot be PINNED — nothing verified under the
+    // pin), while hashes, links and the key binding stay VERIFIED.
+    let mut s = inv_lock_session();
+    let sig = &mut s.entries[0].signature.as_mut().unwrap().signature_hex;
+    let mut bytes = hex::decode(&*sig).unwrap();
+    bytes[0] ^= 0x01;
+    *sig = hex::encode(bytes);
+    let r = verify_session(&s, &keyring_with_test_key());
+    assert!(r.signer.signature_validity.is_failed());
+    assert_eq!(r.signer.trust, SignerTrust::Mismatch);
+    assert_eq!(status_of(&r, property::ENTRY_HASHES), &Status::Verified);
+    assert_eq!(status_of(&r, property::LINKS), &Status::Verified);
+    assert_eq!(status_of(&r, property::SESSION_KEY_BINDING), &Status::Verified);
+    assert_eq!(r.verdict, Verdict::Failed);
+}
+
+#[test]
+fn unsigned_session_has_no_signer_to_establish() {
+    let r = verify_session(&synthetic_session("docket-synth-t", 3, false), &keyring_with_test_key());
+    assert_eq!(r.signer.signature_validity, Status::Absent);
+    assert_eq!(r.signer.trust, SignerTrust::Unestablished);
+    assert_eq!(r.signer.trust_source, None);
+}
+
+#[test]
+fn signed_session_with_no_key_anywhere_is_unestablished_with_no_source() {
+    let r = verify_session(&inv_lock_session(), &Keyring::new());
+    assert!(matches!(r.signer.signature_validity, Status::Unverifiable { .. }));
+    assert_eq!(r.signer.trust, SignerTrust::Unestablished);
+    assert_eq!(r.signer.trust_source, None);
 }
 
 #[test]
 fn keyring_derives_key_id_from_bytes_not_labels() {
     let mut k = Keyring::new();
-    k.insert(test_pubkey());
+    k.insert_pinned(test_pubkey());
     assert!(k.get("24f6ed6acbfe1009c030d7ca567c33ca").is_some());
     assert!(k.get("ffffffffffffffffffffffffffffffff").is_none());
     assert_eq!(k.len(), 1);
@@ -460,6 +566,7 @@ fn verdict_labels_are_distinct_and_honest() {
     let labels: Vec<&str> = [
         Verdict::Failed,
         Verdict::CryptographicallyVerified,
+        Verdict::CryptographicallyConsistent,
         Verdict::OperatorAttestedUnverifiable,
         Verdict::ConsistentUnauthenticated,
     ]
@@ -471,6 +578,9 @@ fn verdict_labels_are_distinct_and_honest() {
     dedup.dedup();
     assert_eq!(dedup.len(), labels.len());
     assert!(Verdict::OperatorAttestedUnverifiable.label().contains("unverifiable"));
+    assert!(Verdict::CryptographicallyConsistent
+        .label()
+        .contains("signer trust not established"));
     assert!(Verdict::ConsistentUnauthenticated.label().contains("UNAUTHENTICATED"));
     assert!(Status::OperatorAttested.label().contains("unverifiable"));
 }

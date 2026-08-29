@@ -8,8 +8,14 @@
 //! | symmetric (note only) | `K_chain` — which Docket **never holds** | Docket cannot check `chain_hmac`/`head_hmac`. FULL presence is reported as *operator-attested, unverifiable by this verifier*; never a pass. PARTIAL presence is FAILED — see the symmetric-tier block in [`verify_session`]. |
 //! | asymmetric | the signer's PUBLIC key | Ed25519 over the head and every entry, under the session-granularity key rule. |
 //!
+//! The asymmetric tier reports along TWO axes, never merged: signature
+//! validity (did the cryptography hold) and signer trust (does the verifying
+//! key establish an identity — [`SignerTrust`]). A key carried inside the
+//! bundle being examined can prove internal consistency only; identity
+//! requires a key the examiner supplied out of band ([`Keyring::insert_pinned`]).
+//!
 //! The vocabulary is deliberately incapable of collapsing these into one
-//! green checkmark: see [`Status`] and [`Verdict`].
+//! green checkmark: see [`Status`], [`SignerTrust`] and [`Verdict`].
 
 use std::collections::BTreeMap;
 
@@ -79,10 +85,35 @@ pub struct SessionChain {
     pub head: Option<ChainHead>,
 }
 
-/// Public keys the verifier may use, addressed by `key_id`.
+/// Where a public key came from. This is the axis signer trust rests on:
+/// a key the examiner supplied out of band can establish who signed; a key
+/// that travelled inside the bundle being examined cannot, because anyone
+/// can generate a keypair, sign fabricated evidence, and ship the public
+/// half alongside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustSource {
+    /// Supplied by the examiner out of band (`--pin` / `--keys`).
+    ExaminerTrustStore,
+    /// Carried in the bundle's own `keys.json`.
+    BundleProvidedKey,
+}
+
+impl TrustSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            TrustSource::ExaminerTrustStore => "examiner trust store",
+            TrustSource::BundleProvidedKey => "bundle-provided key",
+        }
+    }
+}
+
+/// Public keys the verifier may use, addressed by `key_id`, each tagged with
+/// its [`TrustSource`]. There is no untagged insert: every call site must
+/// state whether a key arrived out of band or from inside the evidence.
 #[derive(Debug, Clone, Default)]
 pub struct Keyring {
-    keys: BTreeMap<String, PublicKey>,
+    keys: BTreeMap<String, (PublicKey, TrustSource)>,
 }
 
 impl Keyring {
@@ -90,15 +121,37 @@ impl Keyring {
         Keyring::default()
     }
 
-    /// Add a key. Its `key_id` is DERIVED from the key bytes, never taken on
-    /// trust from the bundle — a bundle that labels a key with the wrong id
-    /// simply won't find it.
-    pub fn insert(&mut self, key: PublicKey) {
-        self.keys.insert(key.key_id().to_owned(), key);
+    /// Add a key the EXAMINER supplied out of band. Its `key_id` is DERIVED
+    /// from the key bytes, never taken on trust from a label — a file that
+    /// labels a key with the wrong id simply won't find it.
+    pub fn insert_pinned(&mut self, key: PublicKey) {
+        self.keys
+            .insert(key.key_id().to_owned(), (key, TrustSource::ExaminerTrustStore));
+    }
+
+    /// Add a key carried inside the bundle. A pinned key never loses its
+    /// provenance to a bundle copy of itself: same id means same bytes
+    /// (`key_id` is derived), so the examiner-supplied entry stands.
+    pub fn insert_bundle(&mut self, key: PublicKey) {
+        self.keys
+            .entry(key.key_id().to_owned())
+            .or_insert((key, TrustSource::BundleProvidedKey));
     }
 
     pub fn get(&self, key_id: &str) -> Option<&PublicKey> {
-        self.keys.get(key_id)
+        self.keys.get(key_id).map(|(k, _)| k)
+    }
+
+    /// Where the key under `key_id` came from, if it is present.
+    pub fn source(&self, key_id: &str) -> Option<TrustSource> {
+        self.keys.get(key_id).map(|(_, s)| *s)
+    }
+
+    /// Whether the examiner supplied ANY key out of band. When they did, a
+    /// session signed under a key outside that set is a [`SignerTrust::Mismatch`],
+    /// not merely unestablished.
+    pub fn has_pinned(&self) -> bool {
+        self.keys.values().any(|(_, s)| *s == TrustSource::ExaminerTrustStore)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -111,6 +164,22 @@ impl Keyring {
 
     pub fn key_ids(&self) -> impl Iterator<Item = &str> {
         self.keys.keys().map(String::as_str)
+    }
+
+    /// Ids of keys the examiner supplied out of band.
+    pub fn pinned_key_ids(&self) -> impl Iterator<Item = &str> {
+        self.keys
+            .iter()
+            .filter(|(_, (_, s))| *s == TrustSource::ExaminerTrustStore)
+            .map(|(id, _)| id.as_str())
+    }
+
+    /// Ids of keys carried inside the bundle.
+    pub fn bundle_key_ids(&self) -> impl Iterator<Item = &str> {
+        self.keys
+            .iter()
+            .filter(|(_, (_, s))| *s == TrustSource::BundleProvidedKey)
+            .map(|(id, _)| id.as_str())
     }
 }
 
@@ -208,16 +277,80 @@ pub struct PropertyReport {
     pub detail: String,
 }
 
-/// The overall verdict for a session. Four words, never one checkmark.
+/// Signer trust: a separate axis from signature validity, deliberately.
+///
+/// "Ed25519 verified under the supplied public key" is true and ambiguous —
+/// it reads the same whether the key came from the examiner's own trust
+/// store or from inside the bundle being examined. In the second case the
+/// signature proves the bundle is internally consistent and proves nothing
+/// about who produced it. This enum states which case holds, next to (never
+/// merged with) whether the cryptography held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignerTrust {
+    /// The key that verified the signatures was supplied by the examiner out
+    /// of band, and every signature verifies under it.
+    Pinned,
+    /// The only key available (if any) came from inside the bundle, so no
+    /// signer identity is established — whatever the signatures prove about
+    /// consistency. Also the state of an unsigned session, which has no
+    /// signer whose identity could be established.
+    Unestablished,
+    /// The examiner pinned keys out of band and this session's signatures do
+    /// NOT verify under any of them: signed by someone else, or failing
+    /// under the pinned key. A different and more serious statement than
+    /// UNESTABLISHED — the examiner stated an expectation and the evidence
+    /// does not meet it.
+    Mismatch,
+}
+
+impl SignerTrust {
+    pub fn label(self) -> &'static str {
+        match self {
+            SignerTrust::Pinned => "PINNED",
+            SignerTrust::Unestablished => "UNESTABLISHED",
+            SignerTrust::Mismatch => "MISMATCH",
+        }
+    }
+}
+
+/// The two-axis signer summary for one session: signature validity (did the
+/// cryptography hold) and signer trust (does the verifying key establish an
+/// identity). Two results, rendered separately, never collapsed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignerReport {
+    /// Roll-up of `head_signature`, `session_key_binding` and
+    /// `entry_signatures` — a summary line, not a new check: the three
+    /// property rows keep their independent grades.
+    pub signature_validity: Status,
+    pub trust: SignerTrust,
+    /// Provenance of the key the verifier used (or would use) to check this
+    /// session's signatures. `None` when no key was available or the session
+    /// is unsigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_source: Option<TrustSource>,
+    /// Human-readable statement of what the trust grade rests on.
+    pub detail: String,
+}
+
+/// The overall verdict for a session. Five words, never one checkmark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     /// At least one property FAILED. The chain is tampered or corrupt.
     Failed,
-    /// Every keyless property holds, and the head plus every entry carry a
-    /// valid Ed25519 signature under a supplied public key. This verifier
-    /// proved authenticity without any secret.
+    /// Every keyless property holds, the head plus every entry carry a valid
+    /// Ed25519 signature, AND the verifying key was supplied by the examiner
+    /// out of band ([`SignerTrust::Pinned`]). This verifier proved
+    /// authenticity without any secret.
     CryptographicallyVerified,
+    /// Every keyless property holds and every signature verifies — but only
+    /// under a key that did not come from the examiner (bundle-provided, or
+    /// outside the examiner's pins). The cryptography held; the identity did
+    /// not: anyone can generate a keypair, sign fabricated evidence with it,
+    /// and ship the public half alongside. Strictly weaker than
+    /// [`Verdict::CryptographicallyVerified`].
+    CryptographicallyConsistent,
     /// Every keyless property holds. Authenticity of the head and entries
     /// rests ONLY on material this verifier cannot check: the operator's
     /// HMAC and/or a signature under a key it was not given. The operator
@@ -234,6 +367,7 @@ impl Verdict {
         match self {
             Verdict::Failed => "FAILED",
             Verdict::CryptographicallyVerified => "CRYPTOGRAPHICALLY-VERIFIED",
+            Verdict::CryptographicallyConsistent => "CRYPTOGRAPHICALLY-CONSISTENT (signer trust not established)",
             Verdict::OperatorAttestedUnverifiable => "OPERATOR-ATTESTED (unverifiable by this verifier)",
             Verdict::ConsistentUnauthenticated => "CONSISTENT-UNAUTHENTICATED",
         }
@@ -248,6 +382,8 @@ pub struct SessionReport {
     /// The head's signing key id, if the head is signed.
     pub signing_key_id: Option<String>,
     pub properties: Vec<PropertyReport>,
+    /// The two-axis signer summary: signature validity next to signer trust.
+    pub signer: SignerReport,
     pub verdict: Verdict,
 }
 
@@ -639,6 +775,7 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         (KeyState::Available(_), _, _) => Status::failed("internal: key available without a signed head"),
     };
     let head_sig_verified = head_sig_status == Status::Verified;
+    let head_sig_summary = head_sig_status.clone();
     push(
         &mut props,
         property::HEAD_SIGNATURE,
@@ -667,6 +804,7 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         Err(e) => Status::failed(e.to_string()),
     };
     let binding_ok = matches!(binding, Ok(SessionKeyBinding::Bound { .. }));
+    let binding_summary = binding_status.clone();
     push(
         &mut props,
         property::SESSION_KEY_BINDING,
@@ -723,6 +861,7 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         }
     };
     let entry_sigs_verified = entry_sig_status == Status::Verified;
+    let entry_sig_summary = entry_sig_status.clone();
     push(
         &mut props,
         property::ENTRY_SIGNATURES,
@@ -730,14 +869,103 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         format!("{n} entries, {SCHEME}, domain tag VIRP-CHAIN-ENTRY-SIG-v1"),
     );
 
+    // --- the signer axes --------------------------------------------------
+    // Axis 1, signature validity: a roll-up of the three signature
+    // properties. A summary, not a new check — the property rows above keep
+    // their independent grades and their independent failures.
+    let all_sigs_verified = head_sig_verified && binding_ok && entry_sigs_verified;
+    let signature_validity = [&head_sig_summary, &binding_summary, &entry_sig_summary]
+        .into_iter()
+        .find(|s| s.is_failed())
+        .or_else(|| {
+            [&head_sig_summary, &binding_summary, &entry_sig_summary]
+                .into_iter()
+                .find(|s| matches!(s, Status::Unverifiable { .. }))
+        })
+        .cloned()
+        .unwrap_or(if all_sigs_verified {
+            Status::Verified
+        } else {
+            Status::Absent
+        });
+
+    // Axis 2, signer trust: where the verifying key came from. PINNED only
+    // when every signature verifies under a key the examiner supplied out of
+    // band; MISMATCH whenever the examiner pinned keys and this session's
+    // signatures do not verify under any of them; UNESTABLISHED otherwise —
+    // the only key knowledge (if any) came from inside the bundle.
+    let (trust, trust_source, trust_detail) = match &signing_key_id {
+        None => (
+            SignerTrust::Unestablished,
+            None,
+            "the session is unsigned; there is no signer whose identity could be established".to_owned(),
+        ),
+        Some(k) => {
+            let source = keyring.source(k);
+            match source {
+                Some(TrustSource::ExaminerTrustStore) if all_sigs_verified => (
+                    SignerTrust::Pinned,
+                    source,
+                    format!("signatures verify under key_id {k}, supplied by the examiner out of band"),
+                ),
+                Some(TrustSource::ExaminerTrustStore) => (
+                    SignerTrust::Mismatch,
+                    source,
+                    format!(
+                        "an examiner-pinned key matches key_id {k}, but this session's signatures do not \
+                         all verify under it"
+                    ),
+                ),
+                _ if keyring.has_pinned() => {
+                    let pins: Vec<&str> = keyring.pinned_key_ids().collect();
+                    (
+                        SignerTrust::Mismatch,
+                        source,
+                        format!(
+                            "the examiner pinned key_id(s) {}, but this session is signed under key_id {k}, \
+                             which is not among them",
+                            pins.join(", ")
+                        ),
+                    )
+                }
+                Some(TrustSource::BundleProvidedKey) => (
+                    SignerTrust::Unestablished,
+                    source,
+                    format!(
+                        "the only key for key_id {k} came from inside the bundle being examined; the \
+                         signatures prove internal consistency, not who produced the bundle"
+                    ),
+                ),
+                None => (
+                    SignerTrust::Unestablished,
+                    None,
+                    format!("no key for key_id {k} was available from any source"),
+                ),
+            }
+        }
+    };
+    let signer = SignerReport {
+        signature_validity,
+        trust,
+        trust_source,
+        detail: trust_detail,
+    };
+
     // --- verdict ----------------------------------------------------------
+    // The top tier requires BOTH axes: valid signatures AND a pinned signer.
+    // Valid signatures under a key that establishes no identity earn only
+    // CRYPTOGRAPHICALLY-CONSISTENT — the cryptography held, the identity did
+    // not — so the weakest-link bundle roll-up carries the demotion with no
+    // special case.
     let any_failed = props.iter().any(|p| p.status.is_failed());
     let any_operator_attested = props.iter().any(|p| p.status == Status::OperatorAttested);
     let any_unverifiable = props.iter().any(|p| matches!(p.status, Status::Unverifiable { .. }));
     let verdict = if any_failed {
         Verdict::Failed
-    } else if head_sig_verified && binding_ok && entry_sigs_verified {
+    } else if all_sigs_verified && trust == SignerTrust::Pinned {
         Verdict::CryptographicallyVerified
+    } else if all_sigs_verified {
+        Verdict::CryptographicallyConsistent
     } else if any_operator_attested || any_unverifiable {
         Verdict::OperatorAttestedUnverifiable
     } else {
@@ -750,6 +978,7 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         entry_count: n,
         signing_key_id,
         properties: props,
+        signer,
         verdict,
     }
 }

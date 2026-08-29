@@ -49,14 +49,28 @@ fn copy_dir(src: &Path, dst: &Path) {
 const ENTRY_SIG_PREFIX: &str = "9626512b488a795de6156f70a6bf47fd";
 const HEAD_SIG_PREFIX: &str = "fa78fc4b10f486b9a47544e90a58751f";
 
+/// The fixture's own keys.json, offered back as an examiner pin. Same file,
+/// different provenance: --pin is the out-of-band channel, wherever the
+/// bytes happen to live on disk.
+fn pin_arg() -> String {
+    fixture().join("keys.json").to_str().unwrap().to_owned()
+}
+
 #[test]
-fn golden_bundle_is_cryptographically_verified_exit_0() {
-    let (code, out, err) = run(&[fixture().to_str().unwrap()]);
+fn golden_bundle_with_pinned_key_is_cryptographically_verified_exit_0() {
+    let (code, out, err) = run(&["--pin", &pin_arg(), fixture().to_str().unwrap()]);
     assert_eq!(code, 0, "stderr: {err}");
     assert!(out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED"), "{out}");
     assert!(out.contains("head_signature         VERIFIED"), "{out}");
     assert!(out.contains("entry_signatures       VERIFIED"), "{out}");
     assert!(out.contains("session_key_binding    VERIFIED"), "{out}");
+    assert!(out.contains("signature_validity     VERIFIED"), "{out}");
+    assert!(out.contains("signer_trust           PINNED"), "{out}");
+    assert!(out.contains("trust_source           examiner trust store"), "{out}");
+    assert!(
+        out.contains("examiner-supplied key(s): 24f6ed6acbfe1009c030d7ca567c33ca"),
+        "{out}"
+    );
     assert!(out.contains("seal_head_match        ABSENT"), "{out}");
     assert!(out.contains("consistency            VERIFIED"), "{out}");
     assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
@@ -68,14 +82,72 @@ fn golden_bundle_is_cryptographically_verified_exit_0() {
 }
 
 #[test]
+fn golden_bundle_without_a_pin_demotes_to_cryptographically_consistent_exit_5() {
+    // The only key came from inside the bundle. The cryptography still
+    // verifies — and the top line must say the identity did not.
+    let (code, out, err) = run(&[fixture().to_str().unwrap()]);
+    assert_eq!(code, 5, "stderr: {err}");
+    assert!(
+        out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-CONSISTENT (signer trust not established)"),
+        "{out}"
+    );
+    assert!(!out.contains("CRYPTOGRAPHICALLY-VERIFIED"), "{out}");
+    // Validity is unchanged: every signature property still VERIFIED.
+    assert!(out.contains("head_signature         VERIFIED"), "{out}");
+    assert!(out.contains("entry_signatures       VERIFIED"), "{out}");
+    assert!(out.contains("signature_validity     VERIFIED"), "{out}");
+    // Trust is the axis that moved.
+    assert!(out.contains("signer_trust           UNESTABLISHED"), "{out}");
+    assert!(out.contains("trust_source           bundle-provided key"), "{out}");
+    assert!(out.contains("came from inside the bundle being examined"), "{out}");
+    assert!(out.contains("signer trust cannot be PINNED"), "{out}");
+}
+
+#[test]
+fn wrong_pinned_key_is_a_mismatch_distinct_from_unestablished() {
+    // A valid Ed25519 key (RFC 8032 test vector) that is NOT the session's
+    // signer. The bundle's own key still checks the signatures (validity
+    // VERIFIED), but the examiner's stated expectation is unmet: MISMATCH,
+    // not merely UNESTABLISHED, in both the text and the JSON.
+    let dir = variant("wrong-pin", "manifest.json", "docket-bundle", "docket-bundle");
+    let wrong = dir.join("wrong-pin.json");
+    std::fs::write(
+        &wrong,
+        r#"{"keys":[{"key_id":"21fe31dfa154a261626bf854046fd227","algorithm":"ed25519",
+           "public_key_hex":"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"}]}"#,
+    )
+    .unwrap();
+    let (code, out, err) = run(&["--pin", wrong.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert_eq!(code, 5, "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("signature_validity     VERIFIED"), "{out}");
+    assert!(out.contains("signer_trust           MISMATCH"), "{out}");
+    assert!(out.contains("which is not among them"), "{out}");
+    assert!(!out.contains("signer_trust           UNESTABLISHED"), "{out}");
+
+    let (jcode, json, _) = run(&["--json", "--pin", wrong.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert_eq!(jcode, 5);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["sessions"][0]["signer"]["trust"], "mismatch");
+    assert_eq!(v["sessions"][0]["signer"]["signature_validity"]["status"], "verified");
+    assert_eq!(v["pinned_key_ids"][0], "21fe31dfa154a261626bf854046fd227");
+}
+
+#[test]
 fn json_output_is_machine_readable() {
+    // Unpinned: the demoted shape, with the new versioned schema fields.
     let (code, out, _) = run(&["--json", fixture().to_str().unwrap()]);
-    assert_eq!(code, 0);
+    assert_eq!(code, 5);
     let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert_eq!(v["verdict"], "cryptographically_verified");
+    assert_eq!(v["docket_report_version"], "docket-report/0.2");
+    assert_eq!(v["verdict"], "cryptographically_consistent");
     assert_eq!(v["sessions"][0]["session_id"], "inv-lock-1");
-    assert_eq!(v["sessions"][0]["verdict"], "cryptographically_verified");
+    assert_eq!(v["sessions"][0]["verdict"], "cryptographically_consistent");
+    assert_eq!(v["sessions"][0]["signer"]["signature_validity"]["status"], "verified");
+    assert_eq!(v["sessions"][0]["signer"]["trust"], "unestablished");
+    assert_eq!(v["sessions"][0]["signer"]["trust_source"], "bundle_provided_key");
     assert_eq!(v["sessions"][0]["seal_head_match"]["status"], "absent");
+    assert_eq!(v["bundle_key_ids"][0], "24f6ed6acbfe1009c030d7ca567c33ca");
+    assert!(v["pinned_key_ids"].as_array().unwrap().is_empty());
     assert_eq!(v["seal"]["consistency"]["status"], "verified");
     assert_eq!(v["seal"]["signature"]["status"], "unverifiable");
     let props = v["sessions"][0]["properties"].as_array().unwrap();
@@ -83,6 +155,15 @@ fn json_output_is_machine_readable() {
     assert!(props
         .iter()
         .all(|p| p["status"] == "verified" || p["status"] == "absent"));
+
+    // Pinned: full strength.
+    let (code, out, _) = run(&["--json", "--pin", &pin_arg(), fixture().to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(v["verdict"], "cryptographically_verified");
+    assert_eq!(v["sessions"][0]["signer"]["trust"], "pinned");
+    assert_eq!(v["sessions"][0]["signer"]["trust_source"], "examiner_trust_store");
+    assert_eq!(v["pinned_key_ids"][0], "24f6ed6acbfe1009c030d7ca567c33ca");
 }
 
 #[test]
@@ -356,7 +437,13 @@ const OTHER_PUB: &str = "untrusted comment: minisign public key 8D04332BB3D74D83
 #[test]
 fn seal_key_with_carried_signature_verifies_and_names_the_ignored_embedded_claim() {
     let dir = bundle_with_carried_seal_sig("sealsig-carried");
-    let (code, out, err) = run(&["--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    let (code, out, err) = run(&[
+        "--pin",
+        &pin_arg(),
+        "--seal-key",
+        &seal_key_arg(),
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
     assert!(out.contains("signature              VERIFIED"), "{out}");
     assert!(out.contains("signature carried in the bundle"), "{out}");
@@ -367,7 +454,14 @@ fn seal_key_with_carried_signature_verifies_and_names_the_ignored_embedded_claim
     assert!(out.contains("seal_head_match"), "{out}");
     assert!(out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED"), "{out}");
 
-    let (jcode, json, _) = run(&["--json", "--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    let (jcode, json, _) = run(&[
+        "--json",
+        "--pin",
+        &pin_arg(),
+        "--seal-key",
+        &seal_key_arg(),
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(jcode, 0);
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["seal"]["signature"]["status"], "verified");
@@ -382,6 +476,8 @@ fn seal_sig_supplied_out_of_band_verifies_without_a_carried_signature() {
     // Unmodified fixture: no seal_signature in the manifest.
     let sig = vectors().join("seal-2026-08.json.test.minisig");
     let (code, out, _) = run(&[
+        "--pin",
+        &pin_arg(),
         "--seal-key",
         &seal_key_arg(),
         "--seal-sig",
@@ -420,7 +516,13 @@ fn wrong_seal_key_is_unverifiable_with_both_ids_named_not_failed() {
     let dir = bundle_with_carried_seal_sig("sealsig-wrongkey");
     let other = dir.join("other.pub");
     std::fs::write(&other, OTHER_PUB).unwrap();
-    let (code, out, _) = run(&["--seal-key", other.to_str().unwrap(), dir.to_str().unwrap()]);
+    let (code, out, _) = run(&[
+        "--pin",
+        &pin_arg(),
+        "--seal-key",
+        other.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
     // Wrong key = nothing checked, not tampering: verdict path untouched.
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
@@ -434,7 +536,7 @@ fn wrong_seal_key_is_unverifiable_with_both_ids_named_not_failed() {
 #[test]
 fn without_seal_key_output_is_unverifiable_as_before_even_with_a_carried_sig() {
     let dir = bundle_with_carried_seal_sig("sealsig-nokey");
-    let (code, out, _) = run(&[dir.to_str().unwrap()]);
+    let (code, out, _) = run(&["--pin", &pin_arg(), dir.to_str().unwrap()]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
     assert!(
@@ -447,7 +549,13 @@ fn without_seal_key_output_is_unverifiable_as_before_even_with_a_carried_sig() {
 #[test]
 fn seal_key_without_any_signature_is_unverifiable_and_says_what_is_missing() {
     // Unmodified fixture (no carried sig), key supplied, no --seal-sig.
-    let (code, out, _) = run(&["--seal-key", &seal_key_arg(), fixture().to_str().unwrap()]);
+    let (code, out, _) = run(&[
+        "--pin",
+        &pin_arg(),
+        "--seal-key",
+        &seal_key_arg(),
+        fixture().to_str().unwrap(),
+    ]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("signature              UNVERIFIABLE"), "{out}");
     assert!(out.contains("no signature to check"), "{out}");
@@ -515,7 +623,13 @@ fn seal_key_against_a_bundle_with_no_seal_says_it_checked_nothing() {
         "\"seal\": \"seal/seal-2026-08.json\"",
         "\"x_no_seal\": null",
     );
-    let (code, out, _) = run(&["--seal-key", &seal_key_arg(), dir.to_str().unwrap()]);
+    let (code, out, _) = run(&[
+        "--pin",
+        &pin_arg(),
+        "--seal-key",
+        &seal_key_arg(),
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("the supplied --seal-key checked nothing"), "{out}");
 }

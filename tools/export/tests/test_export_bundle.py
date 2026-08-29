@@ -668,9 +668,15 @@ class KeysExport(unittest.TestCase):
                 json.dump(content, f, indent=1)
         return path
 
-    # ---- THE GATE: the real verifier accepts a --keys export as exit 0 -----
+    # ---- THE GATE: the real verifier accepts a --keys export ---------------
+    #
+    # Since the signer-trust axis, a key travelling INSIDE the bundle checks
+    # the signatures but establishes no identity: the exported bundle is
+    # CRYPTOGRAPHICALLY-CONSISTENT (exit 5) on its own, and earns the full
+    # CRYPTOGRAPHICALLY-VERIFIED (exit 0) only when the examiner pins the
+    # same key out of band (--pin).
 
-    def test_gate_keys_export_of_signed_session_is_cryptographically_verified_exit_0(self):
+    def test_gate_keys_export_of_signed_session_verifies_and_pins_to_exit_0(self):
         pub_path = self.key_file("chain-signing.pub.json", {"algorithm": "Ed25519", "public_key_hex": self.pub})
         out = self.out("bundle")
         r = run_export("--db", self.db, "--out", out, "--sessions", "inv-lock-1", "--keys", pub_path)
@@ -679,14 +685,29 @@ class KeysExport(unittest.TestCase):
         with open(os.path.join(out, "manifest.json")) as f:
             self.assertEqual(json.load(f)["keys"], "keys.json")
 
+        # In-band key only: valid cryptography, unestablished signer.
         code, text, report = verify(out)
-        self.assertEqual(code, 0, text)
-        self.assertEqual(report["verdict"], "cryptographically_verified")
+        self.assertEqual(code, 5, text)
+        self.assertEqual(report["verdict"], "cryptographically_consistent")
         self.assertEqual(report["key_ids"], [self.key_id])
+        self.assertEqual(report["bundle_key_ids"], [self.key_id])
+        self.assertEqual(report["pinned_key_ids"], [])
         s = session_report(report, "inv-lock-1")
-        self.assertEqual(s["verdict"], "cryptographically_verified")
+        self.assertEqual(s["verdict"], "cryptographically_consistent")
         for p in ("head_signature", "entry_signatures", "session_key_binding"):
             self.assertEqual(prop(s, p), "verified", p)
+        self.assertEqual(s["signer"]["trust"], "unestablished")
+        self.assertEqual(s["signer"]["signature_validity"]["status"], "verified")
+        self.assertIn("OVERALL VERDICT: CRYPTOGRAPHICALLY-CONSISTENT", text)
+
+        # The exported keys.json doubles as the examiner's pin file: pinned,
+        # the same bundle earns the full verdict.
+        code, text, report = verify(out, "--pin", os.path.join(out, "keys.json"))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(report["verdict"], "cryptographically_verified")
+        self.assertEqual(report["pinned_key_ids"], [self.key_id])
+        s = session_report(report, "inv-lock-1")
+        self.assertEqual(s["signer"]["trust"], "pinned")
         self.assertIn("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED", text)
 
     # ---- determinism --------------------------------------------------------

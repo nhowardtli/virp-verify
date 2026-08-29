@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bundle;
+pub mod camera;
 pub mod canonical;
 pub mod hash;
 pub mod limits;
@@ -18,7 +19,14 @@ pub mod seal;
 pub mod sig;
 pub mod verify;
 
-pub use bundle::{read_key_file, Bundle, BundleError, BundleReport, REPORT_VERSION};
+pub use bundle::{
+    read_key_file, BoundaryReport, Bundle, BundleError, BundleReport, CaptureSummary, SourceDeviceAnswer,
+    SourceDeviceReport, REPORT_VERSION,
+};
+pub use camera::{
+    claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureOutage, CaptureOverlap, CapturePolicy,
+    CaptureReport,
+};
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use limits::Limits;

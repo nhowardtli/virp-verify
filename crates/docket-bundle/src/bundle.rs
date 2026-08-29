@@ -27,6 +27,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::camera::{claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureReport};
 use crate::hash::is_hex_digest_64;
 use crate::limits::Limits;
 use crate::minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
@@ -45,8 +46,12 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// added the field itself, the per-session `signer` object
 /// (signature validity / signer trust / trust source), the
 /// `pinned_key_ids` / `bundle_key_ids` split, and the
-/// `cryptographically_consistent` verdict.
-pub const REPORT_VERSION: &str = "docket-report/0.2";
+/// `cryptographically_consistent` verdict. `0.3` added the per-session
+/// `capture_completeness` object and the top-level `boundary` object
+/// (`source_device_established`, `capture_completeness`); no existing field
+/// changed shape or meaning, no verdict or exit code changed, so a tolerant
+/// consumer of 0.2 sees two new keys and nothing else.
+pub const REPORT_VERSION: &str = "docket-report/0.3";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -807,11 +812,13 @@ impl Bundle {
                     (Some(status), Some(coverage))
                 }
             };
+            let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
             sessions.push(SessionOutcome {
                 report,
                 seal_head_match,
                 artifact_binding,
                 artifact_coverage,
+                capture_completeness,
             });
         }
 
@@ -830,6 +837,7 @@ impl Bundle {
         });
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
+        let boundary = boundary_report(self, &sessions);
         BundleReport {
             docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: self.manifest.docket_bundle_version.clone(),
@@ -839,6 +847,7 @@ impl Bundle {
             bundle_key_ids: self.keyring.bundle_key_ids().map(str::to_owned).collect(),
             sessions,
             seal,
+            boundary,
             verdict,
         }
     }
@@ -930,6 +939,14 @@ pub struct SessionOutcome {
     /// Present alongside `artifact_binding`: per-entry body coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_coverage: Option<ArtifactCoverage>,
+    /// Capture completeness: was the camera recording across this session's
+    /// whole window, by the producer's own signed capture policy? A separate
+    /// axis from every cryptographic property above — it never feeds the
+    /// verdict, and the verdict never implies it (chain contiguity proves no
+    /// missing sequence number, not no missing time). Always graded; a
+    /// session whose evidence cannot carry the answer says UNVERIFIABLE and
+    /// why.
+    pub capture_completeness: CaptureReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -950,6 +967,112 @@ pub struct SealOutcome {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature_detail: String,
     pub residual_disclosure: String,
+}
+
+/// Boundary results: questions about this verifier's own limits, answered
+/// from the evidence rather than stated as copy. Each is a question with a
+/// computed answer, NOT a new verdict tier — the five-status property
+/// vocabulary and the five verdicts are unchanged. A report without this
+/// object comes from a verifier that does not implement these checks (NOT
+/// GRADED) — a different statement from UNVERIFIABLE, which means the check
+/// ran here and the evidence lacks what it needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryReport {
+    /// Does anything independently trusted establish WHICH PHYSICAL DEVICE
+    /// produced these bytes? The signatures prove the producer key committed
+    /// to them; the bodies claim a camera_id; neither is a device
+    /// credential. Always NO from this verifier version — stated per bundle
+    /// with the claimed identity named, so the answer changes when the
+    /// evidence changes rather than when the copy is edited.
+    pub source_device_established: SourceDeviceReport,
+    /// The weakest per-session capture-completeness grade, with the
+    /// per-session grades restated. See [`CaptureReport`] on each session
+    /// for the outage/overlap detail.
+    pub capture_completeness: CaptureSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDeviceReport {
+    pub answer: SourceDeviceAnswer,
+    pub detail: String,
+}
+
+/// The only answer this verifier version can give is NO: it implements no
+/// device-credential check, and the evidence format carries no independently
+/// trusted device credential to check. The enum exists so a future YES is a
+/// new value, never a reworded string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDeviceAnswer {
+    No,
+}
+
+impl SourceDeviceAnswer {
+    pub fn label(self) -> &'static str {
+        match self {
+            SourceDeviceAnswer::No => "NO",
+        }
+    }
+}
+
+/// Bundle-level capture-completeness roll-up: the weakest session grade.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureSummary {
+    #[serde(flatten)]
+    pub grade: CaptureGrade,
+    pub detail: String,
+}
+
+fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryReport {
+    let mut camera_ids: Vec<String> = Vec::new();
+    for chain in &bundle.sessions {
+        for id in claimed_camera_ids(chain, bundle.artifacts.as_ref()) {
+            if !camera_ids.contains(&id) {
+                camera_ids.push(id);
+            }
+        }
+    }
+    let source_detail = if camera_ids.is_empty() {
+        "no independently trusted device credential establishes a source device, and the carried \
+         evidence names no claimed source (no camera_segment records); the signatures prove what \
+         the signing key committed to, not which physical device produced it"
+            .to_owned()
+    } else {
+        format!(
+            "the signed producer identifies the source as {}; no independently trusted device \
+             credential establishes that identity — the signatures prove the producer key \
+             committed to these bytes, not that they originated at that physical camera",
+            camera_ids
+                .iter()
+                .map(|id| format!("{id:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    // Weakest link across sessions, same discipline as the verdict roll-up.
+    // UNVERIFIABLE outranks the interruption grades: a bundle where part of
+    // the evidence cannot be graded must not summarize as graded-clean.
+    let worst = CaptureGrade::worst(sessions.iter().map(|s| &s.capture_completeness.grade))
+        .cloned()
+        .unwrap_or(CaptureGrade::Unverifiable {
+            reason: "the bundle contains no sessions".to_owned(),
+        });
+    let per_session = sessions
+        .iter()
+        .map(|s| format!("{}: {}", s.report.session_id, s.capture_completeness.grade.label()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    BoundaryReport {
+        source_device_established: SourceDeviceReport {
+            answer: SourceDeviceAnswer::No,
+            detail: source_detail,
+        },
+        capture_completeness: CaptureSummary {
+            grade: worst,
+            detail: per_session,
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -974,7 +1097,11 @@ pub struct BundleReport {
     pub sessions: Vec<SessionOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal: Option<SealOutcome>,
-    /// The weakest session verdict; Failed if anything failed.
+    /// Boundary results, computed on every report ([`BoundaryReport`]).
+    pub boundary: BoundaryReport,
+    /// The weakest session verdict; Failed if anything failed. `boundary`
+    /// is deliberately not an input — those axes report beside the verdict,
+    /// never inside it (see the roll-up note on [`overall_verdict`]).
     pub verdict: Verdict,
 }
 
@@ -983,6 +1110,15 @@ pub struct BundleReport {
 /// FAILED; otherwise the least-authenticated session verdict. An empty
 /// bundle has nothing verified and is FAILED. A VERIFIED seal signature
 /// upgrades nothing: it authenticates the seal, not the sessions.
+///
+/// Capture completeness is deliberately NOT an input, in either direction —
+/// including its FAILED grade. The verdict vocabulary speaks to the
+/// cryptographic verification of the records that exist; completeness
+/// speaks to the time they cover. An unexplained outage does not weaken the
+/// proof of the records around it, and a verified signature chain must
+/// never read as "the camera kept recording". Folding one axis into the
+/// other, in any direction, is exactly the collapse this vocabulary exists
+/// to prevent; the exit code follows the verdict, unchanged.
 fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> Verdict {
     if sessions.is_empty() {
         return Verdict::Failed;

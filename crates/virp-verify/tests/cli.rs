@@ -138,8 +138,18 @@ fn json_output_is_machine_readable() {
     let (code, out, _) = run(&["--json", fixture().to_str().unwrap()]);
     assert_eq!(code, 5);
     let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert_eq!(v["docket_report_version"], "docket-report/0.2");
+    assert_eq!(v["docket_report_version"], "docket-report/0.3");
     assert_eq!(v["verdict"], "cryptographically_consistent");
+    // 0.3: boundary results are computed on every report. This fixture has
+    // no artifact bodies, so completeness is UNVERIFIABLE with the reason,
+    // and no source device is even claimed.
+    assert_eq!(v["boundary"]["source_device_established"]["answer"], "no");
+    assert_eq!(v["boundary"]["capture_completeness"]["grade"], "unverifiable");
+    assert_eq!(v["sessions"][0]["capture_completeness"]["grade"], "unverifiable");
+    assert!(v["sessions"][0]["capture_completeness"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no artifact bodies"));
     assert_eq!(v["sessions"][0]["session_id"], "inv-lock-1");
     assert_eq!(v["sessions"][0]["verdict"], "cryptographically_consistent");
     assert_eq!(v["sessions"][0]["signer"]["signature_validity"]["status"], "verified");

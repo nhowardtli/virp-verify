@@ -39,6 +39,14 @@ use crate::verify::{
 
 pub const BUNDLE_VERSION: &str = "docket-bundle/0.1";
 pub const CHAIN_FORMAT: &str = "v1";
+/// Version of the report schema ([`BundleReport`] as serialized by
+/// `virp-verify --json` and served at `/api/report`). The unversioned report
+/// that predates this field is retroactively `docket-report/0.1`; `0.2`
+/// added the field itself, the per-session `signer` object
+/// (signature validity / signer trust / trust source), the
+/// `pinned_key_ids` / `bundle_key_ids` split, and the
+/// `cryptographically_consistent` verdict.
+pub const REPORT_VERSION: &str = "docket-report/0.2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -200,7 +208,7 @@ impl std::fmt::Display for BundleError {
             Self::KeyIdMismatch { claimed, derived } => {
                 write!(
                     f,
-                    "keys.json claims key_id {claimed} but the key bytes derive {derived}"
+                    "keys file claims key_id {claimed} but the key bytes derive {derived}"
                 )
             }
             Self::UnsupportedKeyAlgorithm(a) => write!(f, "unsupported key algorithm {a:?} (want ed25519)"),
@@ -389,6 +397,32 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, max: u64, what: &'stat
     })
 }
 
+/// Read and validate one docket keys file ([`KeyFile`] format). One reader
+/// for both provenances — a bundle's `keys.json` and an examiner's `--pin`
+/// file get identical strictness: `ed25519` only, and every claimed `key_id`
+/// must derive from the key bytes. Provenance is the CALLER's statement
+/// ([`Keyring::insert_bundle`] vs [`Keyring::insert_pinned`]), never the
+/// file's.
+pub fn read_key_file(path: &Path, limits: &Limits) -> Result<Vec<PublicKey>, BundleError> {
+    let kf: KeyFile = read_json(path, limits.keys_bytes, "keys file")?;
+    let mut keys = Vec::with_capacity(kf.keys.len());
+    for k in kf.keys {
+        if k.algorithm != "ed25519" {
+            return Err(BundleError::UnsupportedKeyAlgorithm(k.algorithm));
+        }
+        let pk =
+            PublicKey::from_hex(&k.public_key_hex).map_err(|_| BundleError::InvalidKey(k.public_key_hex.clone()))?;
+        if pk.key_id() != k.key_id {
+            return Err(BundleError::KeyIdMismatch {
+                claimed: k.key_id,
+                derived: pk.key_id().to_owned(),
+            });
+        }
+        keys.push(pk);
+    }
+    Ok(keys)
+}
+
 /// The first byte in `s` that a VIRP v1 producer could not have written into
 /// a canonical string value, with its offset.
 ///
@@ -564,20 +598,11 @@ impl Bundle {
 
         let mut keyring = Keyring::new();
         if let Some(rel) = &manifest.keys {
-            let kf: KeyFile = read_json(&safe_join(root, rel)?, limits.keys_bytes, "keys.json")?;
-            for k in kf.keys {
-                if k.algorithm != "ed25519" {
-                    return Err(BundleError::UnsupportedKeyAlgorithm(k.algorithm));
-                }
-                let pk = PublicKey::from_hex(&k.public_key_hex)
-                    .map_err(|_| BundleError::InvalidKey(k.public_key_hex.clone()))?;
-                if pk.key_id() != k.key_id {
-                    return Err(BundleError::KeyIdMismatch {
-                        claimed: k.key_id,
-                        derived: pk.key_id().to_owned(),
-                    });
-                }
-                keyring.insert(pk);
+            // Bundle-carried keys: still supported — they are what makes a
+            // bundle self-describing — but tagged with their provenance, so
+            // they can never establish signer identity on their own.
+            for pk in read_key_file(&safe_join(root, rel)?, limits)? {
+                keyring.insert_bundle(pk);
             }
         }
 
@@ -806,9 +831,12 @@ impl Bundle {
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
         BundleReport {
+            docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: self.manifest.docket_bundle_version.clone(),
             chain_format: self.manifest.chain_format.clone(),
             key_ids: self.keyring.key_ids().map(str::to_owned).collect(),
+            pinned_key_ids: self.keyring.pinned_key_ids().map(str::to_owned).collect(),
+            bundle_key_ids: self.keyring.bundle_key_ids().map(str::to_owned).collect(),
             sessions,
             seal,
             verdict,
@@ -926,9 +954,23 @@ pub struct SealOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleReport {
+    /// Report schema version ([`REPORT_VERSION`]). Absent from reports
+    /// produced before `docket-report/0.2`.
+    #[serde(default)]
+    pub docket_report_version: String,
     pub bundle_version: String,
     pub chain_format: String,
+    /// Every key the verifier could use, whatever its provenance — the union
+    /// of the two lists below (kept for consumers of the 0.1 report).
     pub key_ids: Vec<String>,
+    /// Keys the examiner supplied out of band (`--pin`). Only these can make
+    /// signer trust PINNED.
+    #[serde(default)]
+    pub pinned_key_ids: Vec<String>,
+    /// Keys carried inside the bundle's own `keys.json`. These establish
+    /// internal consistency, never identity.
+    #[serde(default)]
+    pub bundle_key_ids: Vec<String>,
     pub sessions: Vec<SessionOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal: Option<SealOutcome>,
@@ -958,7 +1000,12 @@ fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> V
         Verdict::Failed => 0,
         Verdict::ConsistentUnauthenticated => 1,
         Verdict::OperatorAttestedUnverifiable => 2,
-        Verdict::CryptographicallyVerified => 3,
+        // Above OPERATOR-ATTESTED: real cryptography was checked and held
+        // (one keyholder produced everything; tamper-evident against anyone
+        // without the private key). Below CRYPTOGRAPHICALLY-VERIFIED: that
+        // keyholder could be anyone.
+        Verdict::CryptographicallyConsistent => 3,
+        Verdict::CryptographicallyVerified => 4,
     };
     sessions
         .iter()

@@ -18,7 +18,7 @@ pub mod seal;
 pub mod sig;
 pub mod verify;
 
-pub use bundle::{Bundle, BundleError, BundleReport};
+pub use bundle::{read_key_file, Bundle, BundleError, BundleReport, REPORT_VERSION};
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use limits::Limits;
@@ -27,7 +27,7 @@ pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{
     grade_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore, ChainEntry, ChainHead, DetachedSignature,
-    Keyring, PropertyReport, SessionChain, SessionReport, Status, Verdict,
+    Keyring, PropertyReport, SessionChain, SessionReport, SignerReport, SignerTrust, Status, TrustSource, Verdict,
 };
 
 /// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).

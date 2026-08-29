@@ -43,8 +43,8 @@ impl Run {
             self.err
         );
         assert!(
-            matches!(self.code, 0..=4),
-            "{what}: exit {} is not one of the documented codes 0-4\nstderr: {}",
+            matches!(self.code, 0..=5),
+            "{what}: exit {} is not one of the documented codes 0-5\nstderr: {}",
             self.code,
             self.err
         );

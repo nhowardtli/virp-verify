@@ -408,19 +408,198 @@ fn gap_with_empty_or_oversized_reason_fails() {
     assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Gap records at a sliced export's left boundary. The rule, on each camera's
+// FIRST carried record only: a gap citing exactly `segment_seq - 1` (with
+// segment_seq >= 1) names the immediate predecessor the export does not
+// carry — a property of the export's scope, not a defect in the evidence.
+// ACCOUNTED, duration unavailable. Any other citation stays FAILED, and
+// every later record keeps the strict previous-carried-record rule.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn gap_on_a_cameras_first_record_cites_a_boundary_the_session_lacks() {
+fn first_record_gap_citing_its_immediate_predecessor_is_accounted_never_failed() {
+    // The real 2026-08-30 Reolink case: the export begins at segment 9,
+    // whose driver-restart gap record cites after_seq 8 — segment 8 lives
+    // in the previous day's session, outside this bundle.
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2(
+            "cam",
+            9,
+            0.0,
+            6.0,
+            json!({"after_seq": 8, "reason": "driver-restart"}),
+            p.clone(),
+        ),
+        body_v2("cam", 10, 6.0, 12.0, Value::Null, p),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(r.grade, CaptureGrade::InterruptedAccounted, "{r:?}");
+    assert_ne!(r.grade, CaptureGrade::Continuous, "accounted is not complete");
+    assert!(!matches!(r.grade, CaptureGrade::Failed { .. }));
+    assert_eq!(r.external_predecessor_gaps.len(), 1);
+    let g = &r.external_predecessor_gaps[0];
+    assert_eq!((g.after_seq, g.seq), (8, 9));
+    assert_eq!(g.gap_reason, "driver-restart");
+    assert!(r.outages.is_empty(), "the boundary gap is not a measured outage: {r:?}");
+    assert!(
+        r.detail.contains("duration unavailable") && r.detail.contains("predecessor outside bundle"),
+        "{}",
+        r.detail
+    );
+}
+
+#[test]
+fn first_record_gap_citing_a_non_adjacent_predecessor_stays_failed() {
+    // after_seq 3 on first carried segment 9: not the record's own
+    // predecessor — a defect in the evidence, not a slicing artifact.
     let p = policy(6.0, 2.0, 0.0);
     let (chain, store) = chain_with_bodies(&bodies(&[body_v2(
         "cam",
-        5,
+        9,
         0.0,
         6.0,
-        json!({"after_seq": 4, "reason": "driver-restart"}),
+        json!({"after_seq": 3, "reason": "driver-restart"}),
         p,
     )]));
     let r = grade_capture_completeness(&chain, Some(&store));
     assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    assert!(r.external_predecessor_gaps.is_empty());
+}
+
+#[test]
+fn first_record_at_segment_zero_with_any_predecessor_gap_is_failed() {
+    // Segment 0 is the stream's first possible record; no predecessor can
+    // exist, inside the bundle or out.
+    let p = policy(6.0, 2.0, 0.0);
+    for cited in [-1i64, 0, 8] {
+        let (chain, store) = chain_with_bodies(&bodies(&[body_v2(
+            "cam",
+            0,
+            0.0,
+            6.0,
+            json!({"after_seq": cited, "reason": "driver-restart"}),
+            p.clone(),
+        )]));
+        let r = grade_capture_completeness(&chain, Some(&store));
+        assert!(
+            matches!(r.grade, CaptureGrade::Failed { .. }),
+            "after_seq {cited}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn internal_record_gap_keeps_the_strict_previous_record_rule() {
+    // Segment 12 citing 8 when the previous carried segment is 11: the
+    // boundary exception applies only to a camera's FIRST carried record.
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2("cam", 11, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2(
+            "cam",
+            12,
+            900.0,
+            906.0,
+            json!({"after_seq": 8, "reason": "driver-restart"}),
+            p,
+        ),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    assert_ne!(r.grade, CaptureGrade::InterruptedAccounted);
+}
+
+#[test]
+fn external_boundary_gap_with_bad_producer_signature_fails_the_producer_axis_independently() {
+    // The boundary exception is a capture-scope statement; it must not
+    // launder the producer axis. A first record whose gap is a valid
+    // external-predecessor citation but whose producer_sig cannot be an
+    // Ed25519 signature: capture grades ACCOUNTED, the producer signature
+    // fails on its own axis, independently.
+    let p = policy(6.0, 2.0, 0.0);
+    let mut b = body_v2(
+        "cam",
+        9,
+        0.0,
+        6.0,
+        json!({"after_seq": 8, "reason": "driver-restart"}),
+        p,
+    );
+    b["producer_sig"] = json!("deadbeef"); // not 64 bytes of hex
+    let (chain, store) = chain_with_bodies(&bodies(&[b]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(r.grade, CaptureGrade::InterruptedAccounted, "{r:?}");
+    let pr = docket_bundle::grade_producer_signatures(&chain, Some(&store), &[]);
+    assert!(
+        matches!(pr.signature_validity, docket_bundle::verify::Status::Failed { .. }),
+        "{pr:?}"
+    );
+}
+
+#[test]
+fn a_mid_stream_slice_of_a_longer_valid_stream_grades_by_its_own_left_boundary() {
+    // The same producer stream, exported whole and exported as a slice.
+    // Records 0..=4; record 2 carries a gap record for a real outage at the
+    // 1→2 boundary. Whole export: ACCOUNTED with the hole measured. A slice
+    // beginning at record 2: the same gap becomes an external-predecessor
+    // gap — ACCOUNTED, duration unavailable. A slice beginning at record 3
+    // (gap: null on its first record): no left-boundary claim, CONTINUOUS.
+    let p = policy(6.0, 2.0, 0.0);
+    let all: Vec<Value> = vec![
+        body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2("cam", 1, 6.0, 12.0, Value::Null, p.clone()),
+        body_v2(
+            "cam",
+            2,
+            900.0,
+            906.0,
+            json!({"after_seq": 1, "reason": "driver-restart"}),
+            p.clone(),
+        ),
+        body_v2("cam", 3, 906.0, 912.0, Value::Null, p.clone()),
+        body_v2("cam", 4, 912.0, 918.0, Value::Null, p),
+    ];
+
+    let (chain, store) = chain_with_bodies(&bodies(&all));
+    let whole = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(whole.grade, CaptureGrade::InterruptedAccounted, "{whole:?}");
+    assert_eq!(whole.outages.len(), 1);
+    assert!(whole.external_predecessor_gaps.is_empty());
+
+    let (chain, store) = chain_with_bodies(&bodies(&all[2..]));
+    let sliced = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(sliced.grade, CaptureGrade::InterruptedAccounted, "{sliced:?}");
+    assert!(sliced.outages.is_empty());
+    assert_eq!(sliced.external_predecessor_gaps.len(), 1);
+    assert_eq!(sliced.external_predecessor_gaps[0].after_seq, 1);
+
+    let (chain, store) = chain_with_bodies(&bodies(&all[3..]));
+    let no_claim = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(no_claim.grade, CaptureGrade::Continuous, "{no_claim:?}");
+}
+
+#[test]
+fn external_boundary_gap_does_not_mask_a_later_unexplained_hole() {
+    // Weakest-link discipline: the accounted left-boundary gap must never
+    // hide an unexplained hole between carried records.
+    let p = policy(6.0, 0.3, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2(
+            "cam",
+            9,
+            0.0,
+            6.0,
+            json!({"after_seq": 8, "reason": "driver-restart"}),
+            p.clone(),
+        ),
+        body_v2("cam", 10, 7.6, 13.6, Value::Null, p),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(r.grade, CaptureGrade::InterruptedUnexplained, "{r:?}");
+    assert_eq!(r.external_predecessor_gaps.len(), 1);
+    assert_eq!(r.outages.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -437,6 +437,13 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             cc.grade.label(),
             cc.detail
         );
+        for g in &cc.external_predecessor_gaps {
+            let _ = writeln!(
+                out,
+                "      {:<12} seq {}→{}  duration unavailable: predecessor outside bundle  gap record: {}",
+                "boundary", g.after_seq, g.seq, g.gap_reason
+            );
+        }
         for o in &cc.outages {
             let _ = writeln!(
                 out,
@@ -513,7 +520,7 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         b.capture_completeness.detail
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict.label());
+    let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());
     let _ = writeln!(out);
     let _ = writeln!(out, "What this verdict means:");
     let _ = writeln!(
@@ -561,11 +568,11 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     let _ = writeln!(
         out,
-        "  INTERRUPTED / ACCOUNTED    an interval is not covered, and a signed gap record or the signed policy's stated tolerance accounts for it. Accounted for is not complete."
+        "  INTERRUPTED / ACCOUNTED    an interval is not covered, and a gap record inside a producer-signed camera manifest — or the signed policy's stated tolerance — accounts for it. Accounted for is not complete."
     );
     let _ = writeln!(
         out,
-        "  INTERRUPTED / UNEXPLAINED  an interval is not covered, no signed gap record explains it, and it exceeds the signed policy"
+        "  INTERRUPTED / UNEXPLAINED  an interval is not covered, no gap record inside a producer-signed camera manifest explains it, and it exceeds the signed policy"
     );
     let _ = writeln!(
         out,

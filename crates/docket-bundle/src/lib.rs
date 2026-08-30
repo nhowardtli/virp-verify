@@ -26,7 +26,7 @@ pub use bundle::{
 };
 pub use camera::{
     claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureOutage, CaptureOverlap, CapturePolicy,
-    CaptureReport,
+    CaptureReport, ExternalPredecessorGap,
 };
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};

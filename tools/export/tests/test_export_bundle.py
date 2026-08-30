@@ -671,7 +671,7 @@ class KeysExport(unittest.TestCase):
     # ---- THE GATE: the real verifier accepts a --keys export ---------------
     #
     # Since the signer-trust axis, a key travelling INSIDE the bundle checks
-    # the signatures but establishes no identity: the exported bundle is
+    # the signatures but is no examiner-selected trust anchor: the bundle is
     # CRYPTOGRAPHICALLY-CONSISTENT (exit 5) on its own, and earns the full
     # CRYPTOGRAPHICALLY-VERIFIED (exit 0) only when the examiner pins the
     # same key out of band (--pin).

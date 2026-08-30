@@ -610,7 +610,8 @@ impl Bundle {
         if let Some(rel) = &manifest.keys {
             // Bundle-carried keys: still supported — they are what makes a
             // bundle self-describing — but tagged with their provenance, so
-            // they can never establish signer identity on their own.
+            // they can never stand as an examiner-selected trust anchor on
+            // their own.
             for pk in read_key_file(&safe_join(root, rel)?, limits)? {
                 keyring.insert_bundle(pk);
             }
@@ -1115,8 +1116,8 @@ pub struct BundleReport {
     /// signer trust PINNED.
     #[serde(default)]
     pub pinned_key_ids: Vec<String>,
-    /// Keys carried inside the bundle's own `keys.json`. These establish
-    /// internal consistency, never identity.
+    /// Keys carried inside the bundle's own `keys.json`. These prove
+    /// internal consistency only, never an examiner-selected trust anchor.
     #[serde(default)]
     pub bundle_key_ids: Vec<String>,
     /// Producer PUBLIC keys the examiner supplied out of band

@@ -9,10 +9,11 @@
 //! | asymmetric | the signer's PUBLIC key | Ed25519 over the head and every entry, under the session-granularity key rule. |
 //!
 //! The asymmetric tier reports along TWO axes, never merged: signature
-//! validity (did the cryptography hold) and signer trust (does the verifying
-//! key establish an identity — [`SignerTrust`]). A key carried inside the
-//! bundle being examined can prove internal consistency only; identity
-//! requires a key the examiner supplied out of band ([`Keyring::insert_pinned`]).
+//! validity (did the cryptography hold) and signer trust (did the signatures
+//! verify under an examiner-pinned key — [`SignerTrust`]). A key carried
+//! inside the bundle being examined can prove internal consistency only;
+//! PINNED requires a key the examiner supplied out of band
+//! ([`Keyring::insert_pinned`]).
 //!
 //! The vocabulary is deliberately incapable of collapsing these into one
 //! green checkmark: see [`Status`], [`SignerTrust`] and [`Verdict`].
@@ -86,10 +87,12 @@ pub struct SessionChain {
 }
 
 /// Where a public key came from. This is the axis signer trust rests on:
-/// a key the examiner supplied out of band can establish who signed; a key
-/// that travelled inside the bundle being examined cannot, because anyone
-/// can generate a keypair, sign fabricated evidence, and ship the public
-/// half alongside.
+/// only a key the examiner supplied out of band earns PINNED; a key that
+/// travelled inside the bundle being examined cannot, because anyone can
+/// generate a keypair, sign fabricated evidence, and ship the public half
+/// alongside. Pinning proves the signatures verify under the key the
+/// examiner selected — where the examiner got that key, and whether it
+/// belongs to who they think, is outside this tool entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustSource {
@@ -292,9 +295,9 @@ pub enum SignerTrust {
     /// of band, and every signature verifies under it.
     Pinned,
     /// The only key available (if any) came from inside the bundle, so no
-    /// signer identity is established — whatever the signatures prove about
+    /// signer trust is established — whatever the signatures prove about
     /// consistency. Also the state of an unsigned session, which has no
-    /// signer whose identity could be established.
+    /// signature to check under any key.
     Unestablished,
     /// The examiner pinned keys out of band and this session's signatures do
     /// NOT verify under any of them: signed by someone else, or failing
@@ -315,8 +318,8 @@ impl SignerTrust {
 }
 
 /// The two-axis signer summary for one session: signature validity (did the
-/// cryptography hold) and signer trust (does the verifying key establish an
-/// identity). Two results, rendered separately, never collapsed.
+/// cryptography hold) and signer trust (did the signatures verify under an
+/// examiner-pinned key). Two results, rendered separately, never collapsed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignerReport {
     /// Roll-up of `head_signature`, `session_key_binding` and
@@ -346,10 +349,10 @@ pub enum Verdict {
     CryptographicallyVerified,
     /// Every keyless property holds and every signature verifies — but only
     /// under a key that did not come from the examiner (bundle-provided, or
-    /// outside the examiner's pins). The cryptography held; the identity did
-    /// not: anyone can generate a keypair, sign fabricated evidence with it,
-    /// and ship the public half alongside. Strictly weaker than
-    /// [`Verdict::CryptographicallyVerified`].
+    /// outside the examiner's pins). The cryptography held without an
+    /// examiner-selected trust anchor: anyone can generate a keypair, sign
+    /// fabricated evidence with it, and ship the public half alongside.
+    /// Strictly weaker than [`Verdict::CryptographicallyVerified`].
     CryptographicallyConsistent,
     /// Every keyless property holds. Authenticity of the head and entries
     /// rests ONLY on material this verifier cannot check: the operator's
@@ -898,7 +901,7 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
         None => (
             SignerTrust::Unestablished,
             None,
-            "the session is unsigned; there is no signer whose identity could be established".to_owned(),
+            "the session is unsigned; there is no signature to check under any key".to_owned(),
         ),
         Some(k) => {
             let source = keyring.source(k);
@@ -953,10 +956,10 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
 
     // --- verdict ----------------------------------------------------------
     // The top tier requires BOTH axes: valid signatures AND a pinned signer.
-    // Valid signatures under a key that establishes no identity earn only
-    // CRYPTOGRAPHICALLY-CONSISTENT — the cryptography held, the identity did
-    // not — so the weakest-link bundle roll-up carries the demotion with no
-    // special case.
+    // Valid signatures under a key the examiner did not pin earn only
+    // CRYPTOGRAPHICALLY-CONSISTENT — the cryptography held without an
+    // examiner-selected trust anchor — so the weakest-link bundle roll-up
+    // carries the demotion with no special case.
     let any_failed = props.iter().any(|p| p.status.is_failed());
     let any_operator_attested = props.iter().any(|p| p.status == Status::OperatorAttested);
     let any_unverifiable = props.iter().any(|p| matches!(p.status, Status::Unverifiable { .. }));

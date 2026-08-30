@@ -127,3 +127,85 @@ fn camera_record_missing_sig_fields_is_failed_even_without_keys() {
         assert!(r.signature_validity.is_failed(), "kid={with_kid} sig={with_sig}: {r:?}");
     }
 }
+
+/// A camera body with explicit `producer_key_id` / `producer_sig` values.
+fn cam_body_valued(kid: &str, sig: &str) -> Value {
+    json!({
+        "schema": "camera_segment/2",
+        "camera_id": "cam",
+        "segment_seq": 0,
+        "producer_key_id": kid,
+        "producer_sig": sig,
+    })
+}
+
+/// No public key is needed to know that a key id is not 32 hex characters
+/// or that an Ed25519 signature is not 64 bytes of hex: malformed fields
+/// are checked and wrong (FAILED) with NO key supplied — never softened to
+/// UNVERIFIABLE. "I cannot check this signature" is a different statement
+/// from "this is not a syntactically valid signature".
+#[test]
+fn malformed_sig_fields_are_failed_even_without_keys() {
+    let good_kid = "00000000000000000000000000000000";
+    let good_sig = "00".repeat(64);
+    let cases: [(&str, String, &str); 9] = [
+        ("empty kid", good_sig.clone(), ""),
+        ("non-hex kid", good_sig.clone(), "not-a-key-id"),
+        ("short kid", good_sig.clone(), "000000000000000000000000000000"),
+        ("long kid", good_sig.clone(), "0000000000000000000000000000000000"),
+        ("uppercase kid", good_sig.clone(), "0000000000000000000000000000000A"),
+        ("empty sig", String::new(), good_kid),
+        ("garbage sig", "garbage".to_owned(), good_kid),
+        ("non-hex 128-char sig", "zz".repeat(64), good_kid),
+        ("wrong-length sig (32 bytes)", "00".repeat(32), good_kid),
+    ];
+    for (label, sig, kid) in &cases {
+        let (chain, store) = chain_with(&[cam_body_valued(kid, sig)]);
+        let r = grade_producer_signatures(&chain, Some(&store), &[]);
+        assert!(r.signature_validity.is_failed(), "{label}: {r:?}");
+        assert_eq!(r.trust, SignerTrust::Unestablished, "{label}: no key was supplied");
+    }
+}
+
+/// The counterpart distinction: a WELL-FORMED signature with no key stays
+/// UNVERIFIABLE ("not checked"), and its reason says the key was missing,
+/// not that the signature was wrong.
+#[test]
+fn well_formed_sig_without_key_is_unverifiable_not_failed() {
+    let (chain, store) = chain_with(&[cam_body(true, true)]);
+    let r = grade_producer_signatures(&chain, Some(&store), &[]);
+    let Status::Unverifiable { reason } = &r.signature_validity else {
+        panic!("want UNVERIFIABLE, got {:?}", r.signature_validity);
+    };
+    assert!(reason.contains("not checked"), "{reason}");
+}
+
+/// An uncarried body may be a camera record this grader cannot see. With a
+/// carried camera record beside it, the session-level answer is
+/// UNVERIFIABLE with the coverage gap stated — mirroring the
+/// capture-completeness rule.
+#[test]
+fn hash_only_entries_beside_a_camera_record_are_stated_in_the_reason() {
+    let (chain, mut store) = chain_with(&[cam_body(true, true), json!({"schema": "other/1"})]);
+    store.remove(&chain.entries[1].fields.artifact_hash);
+    let r = grade_producer_signatures(&chain, Some(&store), &[]);
+    let Status::Unverifiable { reason } = &r.signature_validity else {
+        panic!("want UNVERIFIABLE, got {:?}", r.signature_validity);
+    };
+    assert!(reason.contains("1 of 2 entries have no carried body"), "{reason}");
+}
+
+/// With NO carried camera record and uncarried bodies present, ABSENT
+/// ("there is no producer signature to check") would claim more than the
+/// grader can see: an uncarried body may be a camera record.
+#[test]
+fn hash_only_entries_without_carried_camera_records_are_unverifiable_not_absent() {
+    let (chain, mut store) = chain_with(&[json!({"schema": "other/1"}), json!({"schema": "other/1"})]);
+    store.remove(&chain.entries[1].fields.artifact_hash);
+    let r = grade_producer_signatures(&chain, Some(&store), &[]);
+    let Status::Unverifiable { reason } = &r.signature_validity else {
+        panic!("want UNVERIFIABLE, got {:?}", r.signature_validity);
+    };
+    assert!(reason.contains("no carried body"), "{reason}");
+    assert_eq!(r.trust, SignerTrust::Unestablished);
+}

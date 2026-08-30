@@ -27,3 +27,11 @@ pub fn key_id_hex(public_key: &[u8; 32]) -> String {
 pub fn is_hex_digest_64(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
+
+/// True iff `s` is exactly 32 lowercase hex characters — the rendered form of
+/// a `sha256-raw-16` key id. Lowercase is required: key ids are compared
+/// byte-for-byte against [`key_id_hex`] output, so an uppercase character
+/// makes a value that can never name a key.
+pub fn is_hex_key_id_32(s: &str) -> bool {
+    s.len() == 2 * KEY_ID_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}

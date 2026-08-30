@@ -84,7 +84,7 @@ fn golden_bundle_with_pinned_key_is_cryptographically_verified_exit_0() {
 #[test]
 fn golden_bundle_without_a_pin_demotes_to_cryptographically_consistent_exit_5() {
     // The only key came from inside the bundle. The cryptography still
-    // verifies — and the top line must say the identity did not.
+    // verifies — and the top line must say signer trust was not established.
     let (code, out, err) = run(&[fixture().to_str().unwrap()]);
     assert_eq!(code, 5, "stderr: {err}");
     assert!(

@@ -172,6 +172,72 @@ fn altered_producer_sig_fails_under_the_correct_key() {
     let _ = fs::remove_dir_all(&dst);
 }
 
+/// A session holding one carried camera record whose producer signature is
+/// GENUINELY VALID under the supplied key, plus one hash-only entry, must
+/// not report session-level VERIFIED: the absent body may be a camera
+/// record whose producer signature was never seen. Same weakest-link rule
+/// as capture completeness. Built from real producer-signed fixture bodies
+/// because only those can reach the success path at all.
+#[test]
+fn uncarried_body_beside_a_verified_camera_record_is_unverifiable_not_verified() {
+    use docket_bundle::producer::{grade_producer_signatures, read_producer_key_file};
+    use docket_bundle::sha256_hex;
+    use docket_bundle::verify::{ArtifactStore, SessionChain, SignerTrust, Status};
+
+    let dir = fixture("comp-clean-20260829").join("artifacts");
+    let mut bodies: Vec<Vec<u8>> = fs::read_dir(&dir)
+        .expect("artifacts dir")
+        .map(|e| fs::read(e.expect("dir entry").path()).expect("read body"))
+        .collect();
+    bodies.truncate(2);
+    assert_eq!(bodies.len(), 2, "need two real producer-signed bodies");
+
+    let mut store = ArtifactStore::new();
+    let mut entries = Vec::new();
+    for (i, raw) in bodies.iter().enumerate() {
+        let hash = sha256_hex(raw);
+        store.insert(hash.clone(), raw.clone());
+        entries.push(serde_json::json!({
+            "artifact_hash": hash,
+            "artifact_hash_alg": "sha256",
+            "artifact_id": format!("camseg:test:{i}"),
+            "artifact_schema_version": "1",
+            "artifact_type": "evidence_item",
+            "monotonic_ns": i as u64,
+            "previous_entry_hash": "00".repeat(32),
+            "sequence": i as i64,
+            "session_id": "camera:test:2026-08-29",
+            "signer_node_id": 1u32,
+            "signer_org_id": "local",
+            "timestamp_ns": i as u64,
+            "chain_entry_hash": "00".repeat(32),
+        }));
+    }
+    let chain: SessionChain =
+        serde_json::from_value(serde_json::json!({"session_id": "camera:test:2026-08-29", "entries": entries}))
+            .unwrap();
+    let key = read_producer_key_file(&fixture("producer-keys").join("comp-clean.pub")).unwrap();
+
+    // Sanity: with both bodies carried, the real signatures verify.
+    let full = grade_producer_signatures(&chain, Some(&store), std::slice::from_ref(&key));
+    assert_eq!(full.signature_validity, Status::Verified, "{full:?}");
+    assert_eq!(full.trust, SignerTrust::Pinned);
+
+    // Drop one body: same chain, same key, but the session is no longer
+    // fully readable — UNVERIFIABLE with both facts stated.
+    store.remove(&chain.entries[1].fields.artifact_hash);
+    let partial = grade_producer_signatures(&chain, Some(&store), std::slice::from_ref(&key));
+    let Status::Unverifiable { reason } = &partial.signature_validity else {
+        panic!("want UNVERIFIABLE, got {:?}", partial.signature_validity);
+    };
+    assert!(reason.contains("1 of 2 entries have no carried body"), "{reason}");
+    assert!(
+        reason.contains("1 carried camera record signature(s) verified"),
+        "{reason}"
+    );
+    assert_eq!(partial.trust, SignerTrust::Unestablished, "{partial:?}");
+}
+
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
     fs::create_dir_all(dst).unwrap();
     for entry in fs::read_dir(src).unwrap() {

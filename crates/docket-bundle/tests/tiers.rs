@@ -199,7 +199,7 @@ fn bundle_provided_key_verifies_but_demotes_to_cryptographically_consistent() {
     assert_eq!(status_of(&r, property::HEAD_SIGNATURE), &Status::Verified);
     assert_eq!(status_of(&r, property::ENTRY_SIGNATURES), &Status::Verified);
     assert_eq!(r.signer.signature_validity, Status::Verified);
-    // Axis 2: no identity was established.
+    // Axis 2: signer trust was not established.
     assert_eq!(r.signer.trust, SignerTrust::Unestablished);
     assert_eq!(r.signer.trust_source, Some(TrustSource::BundleProvidedKey));
     // And the top line says so: NOT cryptographically verified.

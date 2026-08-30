@@ -61,8 +61,8 @@ const SCHEMA_V2: &str = "camera_segment/2";
 #[serde(tag = "grade", rename_all = "snake_case")]
 pub enum CaptureGrade {
     /// Every boundary within the capture policy carried inside the
-    /// chain-signed camera record. Says nothing
-    /// about who signed — that is the cryptographic axes' statement.
+    /// chain-signed camera record. Says nothing about the signatures or the
+    /// keys behind them — those are the cryptographic axes' statement.
     Continuous,
     /// Not covered, and accounted for by a signed gap record or the signed
     /// policy's stated tolerance. NOT complete.

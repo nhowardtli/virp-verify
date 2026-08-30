@@ -17,7 +17,7 @@ virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
     virp-verify [--json] [--pin FILE]... [--producer-key FILE]...
-                [--max-sessions N] [--max-entries N]
+                [--fail-on-coverage] [--max-sessions N] [--max-entries N]
                 [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
@@ -41,6 +41,12 @@ OPTIONS:
                          O-Node chain key (--pin) — one never stands in for
                          the other. Without this flag the producer signature
                          is UNVERIFIABLE and producer trust UNESTABLISHED.
+    --fail-on-coverage   also exit nonzero (6) when the bundle-level capture
+                         completeness grades INTERRUPTED / UNEXPLAINED or
+                         FAILED — matching the producer's own opt-in flag.
+                         Chain integrity and coverage stay separate
+                         properties; by default only the verdict drives the
+                         exit code, and a FAILED verdict still exits 1.
     --max-sessions N     reject a bundle listing more than N sessions (default 10000)
     --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
     --seal-key FILE      minisign PUBLIC key to check the seal's signature under.
@@ -73,6 +79,10 @@ EXIT CODES (deliberately NOT collapsed into pass/fail):
     5   CRYPTOGRAPHICALLY-CONSISTENT  every signature verifies, but only under a key that
                                     establishes no identity (bundle-provided, or outside the
                                     examiner's pins): the cryptography held, the identity did not
+    6   coverage failure (--fail-on-coverage only): capture completeness graded
+                                    INTERRUPTED / UNEXPLAINED or FAILED while the cryptographic
+                                    verdict did not fail; without the flag the same bundle keeps
+                                    its verdict exit code
 
 virp-verify never signs, never holds a private key, and never executes anything.
 ";
@@ -85,6 +95,7 @@ fn main() -> ExitCode {
     let mut producer_key_paths: Vec<PathBuf> = Vec::new();
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
+    let mut fail_on_coverage = false;
     let mut pending: Option<&'static str> = None;
     for arg in std::env::args_os().skip(1) {
         // A value expected by the previous flag. Taken before anything else
@@ -122,6 +133,7 @@ fn main() -> ExitCode {
         }
         match arg.to_str() {
             Some("--json") => json = true,
+            Some("--fail-on-coverage") => fail_on_coverage = true,
             Some(
                 f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"),
             ) => {
@@ -237,7 +249,21 @@ fn main() -> ExitCode {
         print!("{}", render_text(&path, &bundle, &report, seal_key.is_some()));
     }
 
-    ExitCode::from(exit_code(report.verdict))
+    let mut code = exit_code(report.verdict);
+    // Opt-in only, and integrity always wins: a FAILED verdict keeps exit 1
+    // (mirroring the producer, where integrity failures return before the
+    // coverage gate). Coverage never feeds the VERDICT either way — this
+    // gate reads the grade beside it, exactly as an integration would.
+    if fail_on_coverage && code != 1 {
+        use docket_bundle::CaptureGrade;
+        if matches!(
+            report.boundary.capture_completeness.grade,
+            CaptureGrade::InterruptedUnexplained | CaptureGrade::Failed { .. }
+        ) {
+            code = 6;
+        }
+    }
+    ExitCode::from(code)
 }
 
 /// Read and parse an out-of-band minisign file named by `flag`. Any problem

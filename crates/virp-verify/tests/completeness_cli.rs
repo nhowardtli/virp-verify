@@ -28,6 +28,16 @@ fn run(args: &[&str]) -> (i32, String) {
     )
 }
 
+fn run_pinned_with(name: &str, extra: &[&str]) -> (i32, String) {
+    let dir = fixture(name);
+    let pin = dir.join("keys.json").to_str().unwrap().to_owned();
+    let dir_s = dir.to_str().unwrap().to_owned();
+    let mut args: Vec<&str> = vec!["--pin", &pin];
+    args.extend_from_slice(extra);
+    args.push(&dir_s);
+    run(&args)
+}
+
 fn run_pinned(name: &str, json: bool) -> (i32, String) {
     let dir = fixture(name);
     let pin = dir.join("keys.json");
@@ -136,4 +146,41 @@ fn unexplained_gap_details_name_the_hole() {
     let pol = &v["sessions"][0]["capture_completeness"]["policies"][0];
     assert_eq!(pol["jitter_ms"], 300);
     assert_eq!(pol["max_unexplained_gap_ms"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// --fail-on-coverage: an opt-in exit-code gate, matching the producer's own
+// flag. Coverage never feeds the verdict; the flag reads the grade beside it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_coverage_exits_6_on_unexplained_and_its_absence_does_not() {
+    // comp-ux grades INTERRUPTED / UNEXPLAINED at full cryptographic
+    // strength: exit 0 without the flag, exit 6 with it, same report text.
+    let (code, out) = run_pinned("comp-ux-20260829", false);
+    assert_eq!(code, 0, "{out}");
+    let (code, out_flagged) = run_pinned_with("comp-ux-20260829", &["--fail-on-coverage"]);
+    assert_eq!(code, 6, "{out_flagged}");
+    assert_eq!(out, out_flagged, "the flag changes the exit code, never the report");
+}
+
+#[test]
+fn fail_on_coverage_leaves_continuous_and_accounted_at_their_verdict_exit() {
+    let (code, out) = run_pinned_with("comp-clean-20260829", &["--fail-on-coverage"]);
+    assert_eq!(code, 0, "CONTINUOUS must not trip the coverage gate: {out}");
+    let (code, out) = run_pinned_with("comp-gap-20260829", &["--fail-on-coverage"]);
+    assert_eq!(
+        code, 0,
+        "ACCOUNTED is disclosed, not unexplained; it must not trip the gate: {out}"
+    );
+}
+
+#[test]
+fn fail_on_coverage_works_in_json_mode_too() {
+    let (code, out) = run_pinned_with("comp-ux-20260829", &["--json", "--fail-on-coverage"]);
+    assert_eq!(code, 6, "{out}");
+    // And the JSON itself is unchanged by the flag.
+    let (code_plain, out_plain) = run_pinned("comp-ux-20260829", true);
+    assert_eq!(code_plain, 0);
+    assert_eq!(out, out_plain);
 }

@@ -290,7 +290,14 @@ fn worst_pair_wins_accounted_does_not_mask_unexplained() {
     let p = policy(6.0, 0.3, 0.0);
     let (chain, store) = chain_with_bodies(&bodies(&[
         body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
-        body_v2("cam", 1, 20.0, 26.0, json!({"reason": "driver-restart"}), p.clone()),
+        body_v2(
+            "cam",
+            1,
+            20.0,
+            26.0,
+            json!({"after_seq": 0, "reason": "driver-restart"}),
+            p.clone(),
+        ),
         body_v2("cam", 2, 28.0, 34.0, Value::Null, p),
     ]));
     let r = grade_capture_completeness(&chain, Some(&store));
@@ -299,16 +306,129 @@ fn worst_pair_wins_accounted_does_not_mask_unexplained() {
 }
 
 #[test]
-fn empty_gap_object_is_not_a_gap_record() {
-    // The producer's grader tests `if gap:` — an empty object is falsy in
-    // Python, so it does not account for anything here either.
+fn empty_gap_object_is_malformed_and_fails() {
+    // Under the producer's `if gap:` an empty object is falsy; here a gap
+    // must be a WELL-FORMED gap record or the record is checked and wrong —
+    // an object with no after_seq/reason accounts for nothing.
     let p = policy(6.0, 0.3, 0.0);
     let (chain, store) = chain_with_bodies(&bodies(&[
         body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
         body_v2("cam", 1, 7.6, 13.6, json!({}), p),
     ]));
     let r = grade_capture_completeness(&chain, Some(&store));
-    assert_eq!(r.grade, CaptureGrade::InterruptedUnexplained, "{r:?}");
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial gap records. The invariant across all of these: an outage with
+// a gap field that fails strict validation grades FAILED (or, absent any gap
+// claim, UNEXPLAINED) — NEVER ACCOUNTED. A truthy-but-malformed value must
+// not launder an unexplained outage into an accounted one.
+// ---------------------------------------------------------------------------
+
+/// Two records with a 894 s hole between them; the second carries `gap`.
+fn holey_pair(
+    gap: Value,
+) -> (
+    docket_bundle::verify::SessionChain,
+    docket_bundle::verify::ArtifactStore,
+) {
+    let p = policy(6.0, 2.0, 0.0);
+    chain_with_bodies(&bodies(&[
+        body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2("cam", 1, 900.0, 906.0, gap, p),
+    ]))
+}
+
+#[test]
+fn gap_with_wrong_after_seq_fails_never_accounts() {
+    // The previous record is segment_seq 0; the gap cites 7 — some other
+    // boundary. Laundering attempt.
+    let (chain, store) = holey_pair(json!({"after_seq": 7, "reason": "driver-restart"}));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    assert_ne!(r.grade, CaptureGrade::InterruptedAccounted);
+}
+
+#[test]
+fn gap_missing_after_seq_fails_never_accounts() {
+    let (chain, store) = holey_pair(json!({"reason": "driver-restart"}));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn gap_as_nonempty_string_fails_never_accounts() {
+    // Truthy in Python; not a gap record.
+    let (chain, store) = holey_pair(json!("driver-restart"));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn gap_as_nonempty_array_fails_never_accounts() {
+    let (chain, store) = holey_pair(json!(["driver-restart"]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn gap_attached_to_the_wrong_camera_fails_never_accounts() {
+    // cam-a has segments 0..=1; cam-b's second record carries a gap citing
+    // cam-a's segment_seq 1 across its own 894 s hole. The previous record
+    // of CAM-B is segment_seq 10, so the citation is wrong for the boundary
+    // it stands on.
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2("cam-a", 0, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2("cam-a", 1, 6.0, 12.0, Value::Null, p.clone()),
+        body_v2("cam-b", 10, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2(
+            "cam-b",
+            11,
+            900.0,
+            906.0,
+            json!({"after_seq": 1, "reason": "driver-restart"}),
+            p,
+        ),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    assert_ne!(r.grade, CaptureGrade::InterruptedAccounted);
+}
+
+#[test]
+fn gap_with_empty_or_oversized_reason_fails() {
+    let (chain, store) = holey_pair(json!({"after_seq": 0, "reason": ""}));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+
+    let (chain, store) = holey_pair(json!({"after_seq": 0, "reason": "x".repeat(257)}));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn gap_on_a_cameras_first_record_cites_a_boundary_the_session_lacks() {
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[body_v2(
+        "cam",
+        5,
+        0.0,
+        6.0,
+        json!({"after_seq": 4, "reason": "driver-restart"}),
+        p,
+    )]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn gap_as_integer_after_seq_float_is_rejected() {
+    // after_seq must be an integer; 0.0 is a float claim, not a sequence.
+    let (chain, store) = holey_pair(json!({"after_seq": 0.5, "reason": "driver-restart"}));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
 }
 
 #[test]

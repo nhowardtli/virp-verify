@@ -196,24 +196,65 @@ struct CamRecord {
     segment_seq: i64,
     start_ns: i64,
     end_ns: i64,
-    /// Python-truthiness of the body's `gap` value, matching the producer's
-    /// `if gap:` — `null`, `{}`, `""`, `0`, `false` and `[]` all count as no
-    /// gap record.
-    gap: bool,
-    gap_reason: Option<String>,
+    gap: Option<GapRecord>,
     policy_s: (f64, f64, f64),
     policy: CapturePolicy,
 }
 
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
+/// A structurally valid gap record. `after_seq` is additionally checked
+/// against the previous record of the same camera during the walk — a gap
+/// citing some OTHER boundary must never account for this one.
+struct GapRecord {
+    after_seq: i64,
+    reason: String,
+}
+
+/// Longest accepted gap `reason`. The producer writes short machine reasons
+/// ("driver-restart"); a reason field is not a place to smuggle unbounded
+/// content into reports.
+const GAP_REASON_MAX_BYTES: usize = 256;
+
+/// Strict read of a record's `gap` field.
+///
+/// `null` is no gap. Anything else must be an object whose `after_seq` is an
+/// integer and whose `reason` is a nonempty string of at most
+/// [`GAP_REASON_MAX_BYTES`]; everything else is `Err` with the defect named.
+/// This is DELIBERATELY stricter than the producer's current `if gap:`
+/// (Python truthiness), under which a nonempty string, a nonempty array or
+/// any nonempty object would launder an unexplained outage into an accounted
+/// one. A malformed gap grades FAILED, never accounted.
+fn read_gap(v: &Value) -> Result<Option<GapRecord>, String> {
+    let Value::Object(o) = v else {
+        return match v {
+            Value::Null => Ok(None),
+            _ => Err(format!(
+                "gap is {}, not an object",
+                match v {
+                    Value::Bool(_) => "a boolean",
+                    Value::Number(_) => "a number",
+                    Value::String(_) => "a string",
+                    Value::Array(_) => "an array",
+                    _ => "unreadable",
+                }
+            )),
+        };
+    };
+    let Some(after_seq) = o.get("after_seq").and_then(Value::as_i64) else {
+        return Err("gap carries no integer after_seq".to_owned());
+    };
+    let Some(reason) = o.get("reason").and_then(Value::as_str) else {
+        return Err("gap carries no reason string".to_owned());
+    };
+    if reason.is_empty() {
+        return Err("gap reason is empty".to_owned());
     }
+    if reason.len() > GAP_REASON_MAX_BYTES {
+        return Err(format!("gap reason exceeds {GAP_REASON_MAX_BYTES} bytes"));
+    }
+    Ok(Some(GapRecord {
+        after_seq,
+        reason: reason.to_owned(),
+    }))
 }
 
 fn ms(seconds: f64) -> i64 {
@@ -376,14 +417,27 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
                 n,
             );
         };
-        let gap_value = body.get("gap").unwrap_or(&Value::Null);
+        let gap = match read_gap(body.get("gap").unwrap_or(&Value::Null)) {
+            Ok(g) => g,
+            Err(defect) => {
+                return CaptureReport::ungraded(
+                    CaptureGrade::Failed {
+                        detail: format!(
+                            "camera_segment/2 record at chain sequence {entry_seq} carries a \
+                             malformed gap record ({defect}); a gap that cannot be read must \
+                             never account for an outage"
+                        ),
+                    },
+                    n,
+                );
+            }
+        };
         records.push(CamRecord {
             camera_id: camera_id.to_owned(),
             segment_seq,
             start_ns,
             end_ns,
-            gap: truthy(gap_value),
-            gap_reason: gap_value.get("reason").and_then(Value::as_str).map(str::to_owned),
+            gap,
             policy_s,
             policy: CapturePolicy {
                 nominal_segment_ms: ms(policy_s.0),
@@ -399,6 +453,39 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
     for r in &records {
         if !policies.contains(&r.policy) {
             policies.push(r.policy.clone());
+        }
+    }
+    // A gap record must cite the boundary it stands on: after_seq equal to
+    // the previous record's segment_seq for the SAME camera. A gap citing a
+    // different boundary — another camera's, another segment's, or one this
+    // session does not carry — is malformed: FAILED, never accounted.
+    for (i, r) in records.iter().enumerate() {
+        if let Some(g) = &r.gap {
+            let prev = if i > 0 { Some(&records[i - 1]) } else { None };
+            let prev_same = prev.filter(|p| p.camera_id == r.camera_id);
+            let defect = match prev_same {
+                None => Some(format!(
+                    "cites after_seq {}, but this session carries no previous record for that camera",
+                    g.after_seq
+                )),
+                Some(p) if p.segment_seq != g.after_seq => Some(format!(
+                    "cites after_seq {}; the previous record of that camera is segment_seq {}",
+                    g.after_seq, p.segment_seq
+                )),
+                Some(_) => None,
+            };
+            if let Some(defect) = defect {
+                return CaptureReport::ungraded(
+                    CaptureGrade::Failed {
+                        detail: format!(
+                            "camera {:?} segment_seq {} carries a gap record that {defect}; a gap \
+                             citing a different boundary must never account for this one",
+                            r.camera_id, r.segment_seq
+                        ),
+                    },
+                    n,
+                );
+            }
         }
     }
     let mut grade = CaptureGrade::Continuous;
@@ -422,7 +509,7 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
             }
             continue;
         }
-        let (class, pair_grade) = if cur.gap {
+        let (class, pair_grade) = if cur.gap.is_some() {
             ("accounted", CaptureGrade::InterruptedAccounted)
         } else if hole_s <= max_gap_s {
             ("tolerated", CaptureGrade::InterruptedAccounted)
@@ -434,7 +521,7 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
             seq: cur.segment_seq,
             hole_ms: ms(hole_s),
             class: class.to_owned(),
-            gap_reason: if cur.gap { cur.gap_reason.clone() } else { None },
+            gap_reason: cur.gap.as_ref().map(|g| g.reason.clone()),
         });
         uncovered_ms += ms(hole_s);
         if pair_grade.rank() > grade.rank() {

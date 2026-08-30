@@ -544,6 +544,10 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     let _ = writeln!(
         out,
+        "Docket verifies DECLARED capture continuity between authenticated camera records. It does not inspect the referenced video to prove each declared window contains footage; segment_sha256 is a reference this tool does not recompute."
+    );
+    let _ = writeln!(
+        out,
         "A report with no boundary results comes from a verifier that does not implement these checks (NOT GRADED) — a different statement from UNVERIFIABLE, which is graded from the evidence."
     );
     // Without --seal-key this line is verbatim what it always was — the

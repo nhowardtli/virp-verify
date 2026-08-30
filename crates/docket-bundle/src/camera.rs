@@ -261,17 +261,34 @@ fn ms(seconds: f64) -> i64 {
     (seconds * 1000.0).round() as i64
 }
 
+/// Longest accepted single capture window, and the ceiling on
+/// `nominal_segment_s`: one day. A record claiming a longer window would
+/// make every later boundary appear covered on the record's own say-so —
+/// the enormous-window laundering this bound refuses.
+const MAX_WINDOW_S: f64 = 86_400.0;
+/// Ceiling on `max_unexplained_gap_s`: one year. A declared tolerance above
+/// it is not a policy, it is a blanket pardon.
+const MAX_UNEXPLAINED_GAP_CEILING_S: f64 = 31_536_000.0;
+
 /// The usable policy of a `camera_segment/2` body, or `None`. Mirrors the
-/// producer's own validation: nominal > 0, jitter and max gap >= 0, jitter <
-/// nominal (a jitter as wide as a segment would tolerate a whole missing
-/// segment as continuous). Values must be JSON numbers — this reader does
-/// not coerce strings the producer never emits.
+/// producer's own validation — nominal > 0, jitter and max gap >= 0, jitter
+/// < nominal (a jitter as wide as a segment would tolerate a whole missing
+/// segment as continuous) — plus Docket's own sanity ceilings: every value
+/// finite, nominal at most [`MAX_WINDOW_S`], max gap at most
+/// [`MAX_UNEXPLAINED_GAP_CEILING_S`]. Values must be JSON numbers — this
+/// reader does not coerce strings the producer never emits.
 fn body_policy(body: &Value) -> Option<(f64, f64, f64)> {
     let p = body.get("capture_policy")?.as_object()?;
     let nominal = p.get("nominal_segment_s")?.as_f64()?;
     let jitter = p.get("jitter_s")?.as_f64()?;
     let max_gap = p.get("max_unexplained_gap_s")?.as_f64()?;
-    if nominal <= 0.0 || jitter < 0.0 || max_gap < 0.0 || jitter >= nominal || !nominal.is_finite() {
+    if !nominal.is_finite() || !jitter.is_finite() || !max_gap.is_finite() {
+        return None;
+    }
+    if nominal <= 0.0 || jitter < 0.0 || max_gap < 0.0 || jitter >= nominal {
+        return None;
+    }
+    if nominal > MAX_WINDOW_S || max_gap > MAX_UNEXPLAINED_GAP_CEILING_S {
         return None;
     }
     Some((nominal, jitter, max_gap))
@@ -417,6 +434,53 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
                 n,
             );
         };
+        // Structural validation of the record's own claims. A window is a
+        // DECLARATION; before grading continuity from it, it must at least
+        // be shaped like time: end after start, bounded, a nonnegative
+        // sequence, a named camera. Checked and wrong is FAILED — never a
+        // window silently accepted because it exists.
+        if camera_id.is_empty() {
+            return CaptureReport::ungraded(
+                CaptureGrade::Failed {
+                    detail: format!("camera_segment/2 record at chain sequence {entry_seq} has an empty camera_id"),
+                },
+                n,
+            );
+        }
+        if segment_seq < 0 {
+            return CaptureReport::ungraded(
+                CaptureGrade::Failed {
+                    detail: format!(
+                        "camera_segment/2 record at chain sequence {entry_seq} claims negative \
+                         segment_seq {segment_seq}"
+                    ),
+                },
+                n,
+            );
+        }
+        if end_ns <= start_ns {
+            return CaptureReport::ungraded(
+                CaptureGrade::Failed {
+                    detail: format!(
+                        "camera_segment/2 record at chain sequence {entry_seq} claims a capture \
+                         window that ends at or before its start"
+                    ),
+                },
+                n,
+            );
+        }
+        if (end_ns as i128 - start_ns as i128) as f64 / 1e9 > MAX_WINDOW_S {
+            return CaptureReport::ungraded(
+                CaptureGrade::Failed {
+                    detail: format!(
+                        "camera_segment/2 record at chain sequence {entry_seq} claims a capture \
+                         window longer than a day; a window that size would cover later \
+                         boundaries on its own say-so"
+                    ),
+                },
+                n,
+            );
+        }
         let gap = match read_gap(body.get("gap").unwrap_or(&Value::Null)) {
             Ok(g) => g,
             Err(defect) => {
@@ -453,6 +517,24 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
     for r in &records {
         if !policies.contains(&r.policy) {
             policies.push(r.policy.clone());
+        }
+    }
+    // segment_seq must be unique per camera: two records claiming the same
+    // slot cannot both be the segment, and sorted-with-duplicates would
+    // grade a fabricated timeline. Uniqueness plus the sort gives strictly
+    // increasing sequences.
+    for pair in records.windows(2) {
+        if pair[0].camera_id == pair[1].camera_id && pair[0].segment_seq == pair[1].segment_seq {
+            return CaptureReport::ungraded(
+                CaptureGrade::Failed {
+                    detail: format!(
+                        "camera {:?} claims segment_seq {} more than once; duplicate sequences \
+                         cannot be graded as a timeline",
+                        pair[0].camera_id, pair[0].segment_seq
+                    ),
+                },
+                n,
+            );
         }
     }
     // A gap record must cite the boundary it stands on: after_seq equal to

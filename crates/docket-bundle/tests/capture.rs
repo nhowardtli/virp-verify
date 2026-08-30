@@ -423,6 +423,90 @@ fn gap_on_a_cameras_first_record_cites_a_boundary_the_session_lacks() {
     assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Malformed capture windows. The invariant: a window that is not shaped like
+// time is refused (FAILED) — never graded CONTINUOUS on the manifest's own
+// say-so.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn window_ending_before_or_at_its_start_is_refused() {
+    let p = policy(6.0, 2.0, 0.0);
+    for (start, end) in [(6.0, 0.0), (6.0, 6.0)] {
+        let (chain, store) = chain_with_bodies(&bodies(&[
+            body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
+            body_v2("cam", 1, start, end, Value::Null, p.clone()),
+        ]));
+        let r = grade_capture_completeness(&chain, Some(&store));
+        assert!(
+            matches!(r.grade, CaptureGrade::Failed { .. }),
+            "start={start} end={end}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn enormous_window_is_refused_not_graded_continuous() {
+    // The laundering this check exists for: a year-long claimed window
+    // covers every later boundary, and the old grader would have called the
+    // session CONTINUOUS having only accepted the record's own assertion.
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2("cam", 0, 0.0, 31_536_000.0, Value::Null, p.clone()),
+        body_v2("cam", 1, 999_000.0, 999_006.0, Value::Null, p),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    assert_ne!(r.grade, CaptureGrade::Continuous);
+}
+
+#[test]
+fn negative_segment_seq_is_refused() {
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[body_v2("cam", -1, 0.0, 6.0, Value::Null, p)]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn duplicate_segment_seq_per_camera_is_refused() {
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2("cam", 0, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2("cam", 0, 6.0, 12.0, Value::Null, p.clone()),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+
+    // The same seq on DIFFERENT cameras is fine.
+    let (chain, store) = chain_with_bodies(&bodies(&[
+        body_v2("cam-a", 0, 0.0, 6.0, Value::Null, p.clone()),
+        body_v2("cam-b", 0, 0.0, 6.0, Value::Null, p),
+    ]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert_eq!(r.grade, CaptureGrade::Continuous, "{r:?}");
+}
+
+#[test]
+fn empty_camera_id_is_refused() {
+    let p = policy(6.0, 2.0, 0.0);
+    let (chain, store) = chain_with_bodies(&bodies(&[body_v2("", 0, 0.0, 6.0, Value::Null, p)]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+}
+
+#[test]
+fn policy_values_beyond_sane_bounds_are_refused() {
+    // nominal above a day, and a declared unexplained-gap tolerance above a
+    // year: not policies, blanket pardons. Both FAIL via the unusable-policy
+    // arm.
+    for p in [policy(90_000.0, 2.0, 0.0), policy(6.0, 2.0, 40_000_000.0)] {
+        let (chain, store) = chain_with_bodies(&bodies(&[body_v2("cam", 0, 0.0, 6.0, Value::Null, p)]));
+        let r = grade_capture_completeness(&chain, Some(&store));
+        assert!(matches!(r.grade, CaptureGrade::Failed { .. }), "{r:?}");
+    }
+}
+
 #[test]
 fn gap_as_integer_after_seq_float_is_rejected() {
     // after_seq must be an integer; 0.0 is a float claim, not a sequence.

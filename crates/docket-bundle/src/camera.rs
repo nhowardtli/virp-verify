@@ -159,6 +159,25 @@ pub struct CaptureOverlap {
     pub overlap_ms: i64,
 }
 
+/// A gap record on a camera's FIRST carried record citing exactly the
+/// segment before it (`after_seq == segment_seq - 1`) — a predecessor this
+/// export does not carry. A sliced export legitimately begins mid-stream;
+/// the record declares an interruption at the export's left boundary, and
+/// the reference is structurally the only one a first record could honestly
+/// make. The declared outage is ACCOUNTED, and its duration is unavailable:
+/// the other side of the boundary is outside the bundle. This is a property
+/// of the export's scope, not a defect in the evidence — a gap citing any
+/// OTHER sequence stays FAILED.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalPredecessorGap {
+    /// The predecessor the gap cites: exactly `seq - 1`, outside this bundle.
+    pub after_seq: i64,
+    /// `segment_seq` of the first carried record, which carries the gap.
+    pub seq: i64,
+    /// The signed gap record's stated reason.
+    pub gap_reason: String,
+}
+
 /// The capture-completeness result for one session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureReport {
@@ -175,6 +194,11 @@ pub struct CaptureReport {
     pub outages: Vec<CaptureOutage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overlaps: Vec<CaptureOverlap>,
+    /// Gap records at the export's left boundary: a camera's first carried
+    /// record citing the uncarried `segment_seq - 1`. Graded INTERRUPTED /
+    /// ACCOUNTED; duration unavailable (predecessor outside bundle).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_predecessor_gaps: Vec<ExternalPredecessorGap>,
 }
 
 impl CaptureReport {
@@ -186,6 +210,7 @@ impl CaptureReport {
             policies: Vec::new(),
             outages: Vec::new(),
             overlaps: Vec::new(),
+            external_predecessor_gaps: Vec::new(),
         }
     }
 }
@@ -539,16 +564,38 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
     }
     // A gap record must cite the boundary it stands on: after_seq equal to
     // the previous record's segment_seq for the SAME camera. A gap citing a
-    // different boundary — another camera's, another segment's, or one this
-    // session does not carry — is malformed: FAILED, never accounted.
+    // different boundary — another camera's, another segment's — is
+    // malformed: FAILED, never accounted. One exception, on a camera's
+    // FIRST carried record only: a gap citing exactly `segment_seq - 1`
+    // names the record's immediate predecessor in the producer's stream,
+    // which a sliced export legitimately does not carry. "The gap record
+    // cites the wrong predecessor" is a defect in the evidence; "the
+    // predecessor is outside this bundle" is a property of the export —
+    // conflating them would grade every sliced export FAILED.
+    let mut external_gaps: Vec<ExternalPredecessorGap> = Vec::new();
     for (i, r) in records.iter().enumerate() {
         if let Some(g) = &r.gap {
             let prev = if i > 0 { Some(&records[i - 1]) } else { None };
             let prev_same = prev.filter(|p| p.camera_id == r.camera_id);
             let defect = match prev_same {
-                None => Some(format!(
-                    "cites after_seq {}, but this session carries no previous record for that camera",
+                None if r.segment_seq >= 1 && g.after_seq == r.segment_seq - 1 => {
+                    external_gaps.push(ExternalPredecessorGap {
+                        after_seq: g.after_seq,
+                        seq: r.segment_seq,
+                        gap_reason: g.reason.clone(),
+                    });
+                    None
+                }
+                None if r.segment_seq == 0 => Some(format!(
+                    "cites after_seq {}, but segment_seq 0 is the stream's first possible record \
+                     and can have no predecessor",
                     g.after_seq
+                )),
+                None => Some(format!(
+                    "cites after_seq {}; the only predecessor a camera's first carried record can \
+                     stand on is its own segment_seq - 1 ({})",
+                    g.after_seq,
+                    r.segment_seq - 1
                 )),
                 Some(p) if p.segment_seq != g.after_seq => Some(format!(
                     "cites after_seq {}; the previous record of that camera is segment_seq {}",
@@ -611,12 +658,28 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
         }
     }
 
-    let detail = if outages.is_empty() {
+    // A declared interruption at the export's left boundary makes the
+    // session ACCOUNTED, never CONTINUOUS: the producer says time is
+    // missing there, and this grader cannot measure how much.
+    if !external_gaps.is_empty() && grade.rank() < CaptureGrade::InterruptedAccounted.rank() {
+        grade = CaptureGrade::InterruptedAccounted;
+    }
+
+    let mut detail = if outages.is_empty() {
         if overlaps.is_empty() {
-            format!("{n} records; every segment boundary within the declared jitter")
+            // "carried" earns its place only when a boundary gap says part
+            // of the stream is outside the bundle; without one the shorter
+            // sentence stays byte-stable for existing bundles.
+            let scope = if external_gaps.is_empty() { "" } else { "carried " };
+            format!("{n} records; every {scope}segment boundary within the declared jitter")
         } else {
+            let scope = if external_gaps.is_empty() {
+                ""
+            } else {
+                " between carried records"
+            };
             format!(
-                "{n} records; no uncovered time; {} boundary/ies beyond the declared jitter, all overlaps",
+                "{n} records; no uncovered time{scope}; {} boundary/ies beyond the declared jitter, all overlaps",
                 overlaps.len()
             )
         }
@@ -627,6 +690,15 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
             uncovered_ms as f64 / 1000.0
         )
     };
+    if !external_gaps.is_empty() {
+        use std::fmt::Write as _;
+        let _ = write!(
+            detail,
+            "; {} gap record(s) at the export's left boundary — duration unavailable: predecessor \
+             outside bundle",
+            external_gaps.len()
+        );
+    }
     CaptureReport {
         grade,
         detail,
@@ -634,6 +706,7 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
         policies,
         outages,
         overlaps,
+        external_predecessor_gaps: external_gaps,
     }
 }
 

@@ -56,7 +56,13 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// trust — the capture host's key, a separate boundary from the O-Node
 /// chain key) and the top-level `producer_key_ids` list; again additive
 /// only: no existing field changed shape or meaning, no verdict changed.
-pub const REPORT_VERSION: &str = "docket-report/0.4";
+/// `0.5` added the per-session `external_predecessor_gaps` list inside
+/// `capture_completeness` (gap records at a sliced export's left boundary,
+/// citing a predecessor the bundle does not carry); additive only: no
+/// existing field changed shape or meaning, no verdict or exit code
+/// changed — but a session whose only capture defect was such a boundary
+/// gap now grades INTERRUPTED / ACCOUNTED where 0.4 graded it FAILED.
+pub const REPORT_VERSION: &str = "docket-report/0.5";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -1134,6 +1140,27 @@ pub struct BundleReport {
     /// is deliberately not an input — those axes report beside the verdict,
     /// never inside it (see the roll-up note on [`overall_verdict`]).
     pub verdict: Verdict,
+}
+
+impl BundleReport {
+    /// The top-line verdict as every surface renders it.
+    ///
+    /// When a boundary result is FAILED, that fact rides in the line
+    /// itself, so the top line cannot be quoted in isolation while a result
+    /// literally named FAILED stands further down the page. The verdict,
+    /// its JSON value and the exit code are untouched — the axes stay
+    /// separate (a capture defect does not weaken the proof of the records
+    /// that exist) — but a defensible classification is not a license for a
+    /// top line that misleads a reader who stops there.
+    pub fn verdict_line(&self) -> String {
+        let v = self.verdict.label();
+        match &self.boundary.capture_completeness.grade {
+            CaptureGrade::Failed { .. } => {
+                format!("{v} — boundary result capture_completeness FAILED (beside this verdict, not inside it)")
+            }
+            _ => v.to_owned(),
+        }
+    }
 }
 
 /// Weakest-link: any failure (including a failed seal head match, a failed

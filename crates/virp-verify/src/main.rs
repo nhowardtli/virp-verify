@@ -437,6 +437,13 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             cc.grade.label(),
             cc.detail
         );
+        for g in &cc.external_predecessor_gaps {
+            let _ = writeln!(
+                out,
+                "      {:<12} seq {}→{}  duration unavailable: predecessor outside bundle  gap record: {}",
+                "boundary", g.after_seq, g.seq, g.gap_reason
+            );
+        }
         for o in &cc.outages {
             let _ = writeln!(
                 out,
@@ -513,7 +520,7 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         b.capture_completeness.detail
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict.label());
+    let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());
     let _ = writeln!(out);
     let _ = writeln!(out, "What this verdict means:");
     let _ = writeln!(

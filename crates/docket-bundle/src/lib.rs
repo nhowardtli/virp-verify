@@ -15,6 +15,7 @@ pub mod canonical;
 pub mod hash;
 pub mod limits;
 pub mod minisign;
+pub mod producer;
 pub mod seal;
 pub mod sig;
 pub mod verify;
@@ -31,6 +32,7 @@ pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, H
 pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use limits::Limits;
 pub use minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
+pub use producer::{canonical_json_bytes, grade_producer_signatures, read_producer_key_file, ProducerSignerReport};
 pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{

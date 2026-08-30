@@ -16,7 +16,8 @@ const USAGE: &str = "\
 virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
-    virp-verify [--json] [--pin FILE]... [--max-sessions N] [--max-entries N]
+    virp-verify [--json] [--pin FILE]... [--producer-key FILE]...
+                [--max-sessions N] [--max-entries N]
                 [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
@@ -31,6 +32,15 @@ OPTIONS:
                          checks signatures, but proves internal consistency
                          only — anyone can generate a keypair, sign fabricated
                          evidence, and ship the public half alongside.
+    --producer-key FILE  producer PUBLIC key (the capture host's producer.pub:
+                         32 raw bytes, or 64 hex chars). Repeatable for
+                         multi-camera bundles; each camera record is checked
+                         against the key matching its producer_key_id. Must
+                         arrive OUT OF BAND: the bundle carries only the key
+                         id, never the key. A SEPARATE trust boundary from the
+                         O-Node chain key (--pin) — one never stands in for
+                         the other. Without this flag the producer signature
+                         is UNVERIFIABLE and producer trust UNESTABLISHED.
     --max-sessions N     reject a bundle listing more than N sessions (default 10000)
     --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
     --seal-key FILE      minisign PUBLIC key to check the seal's signature under.
@@ -72,6 +82,7 @@ fn main() -> ExitCode {
     let mut path: Option<PathBuf> = None;
     let mut limits = Limits::default();
     let mut pin_paths: Vec<PathBuf> = Vec::new();
+    let mut producer_key_paths: Vec<PathBuf> = Vec::new();
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
     let mut pending: Option<&'static str> = None;
@@ -82,6 +93,10 @@ fn main() -> ExitCode {
             match flag {
                 "--pin" => {
                     pin_paths.push(PathBuf::from(&arg));
+                    continue;
+                }
+                "--producer-key" => {
+                    producer_key_paths.push(PathBuf::from(&arg));
                     continue;
                 }
                 "--seal-key" => {
@@ -107,13 +122,16 @@ fn main() -> ExitCode {
         }
         match arg.to_str() {
             Some("--json") => json = true,
-            Some(f @ ("--max-sessions" | "--max-entries" | "--pin" | "--seal-key" | "--seal-sig")) => {
+            Some(
+                f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"),
+            ) => {
                 // Borrowed from USAGE rather than from `arg`, so the flag name
                 // outlives this iteration without an allocation.
                 pending = Some(match f {
                     "--max-sessions" => "--max-sessions",
                     "--max-entries" => "--max-entries",
                     "--pin" => "--pin",
+                    "--producer-key" => "--producer-key",
                     "--seal-key" => "--seal-key",
                     _ => "--seal-sig",
                 });
@@ -163,6 +181,16 @@ fn main() -> ExitCode {
             }
         }
     }
+    let mut producer_keys = Vec::new();
+    for p in &producer_key_paths {
+        match docket_bundle::read_producer_key_file(p) {
+            Ok(k) => producer_keys.push(k),
+            Err(e) => {
+                eprintln!("virp-verify: --producer-key: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     let seal_key = match &seal_key_path {
         None => None,
         Some(p) => match read_minisign(p, "--seal-key", MinisignPublicKey::from_text) {
@@ -195,7 +223,7 @@ fn main() -> ExitCode {
         key,
         signature: seal_sig.as_ref(),
     });
-    let report = bundle.verify_with_seal_key(check.as_ref());
+    let report = bundle.verify_with(check.as_ref(), &producer_keys);
 
     if json {
         match serde_json_string(&report) {
@@ -292,6 +320,14 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             );
         }
     }
+    if !report.producer_key_ids.is_empty() {
+        let _ = writeln!(
+            out,
+            "producer: {} examiner-supplied producer key(s): {}",
+            report.producer_key_ids.len(),
+            report.producer_key_ids.join(", ")
+        );
+    }
     let _ = writeln!(out, "secrets: none — this verifier holds no K_chain and no private key");
     let _ = writeln!(out);
 
@@ -343,6 +379,23 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             r.signer
                 .trust_source
                 .map_or("none — no key was available for this session", |s| s.label())
+        );
+        // The producer's own key: a third result beside chain-signature
+        // validity and signer trust — the O-Node chain key never stands in
+        // for the capture host's producer key.
+        out.push_str(&status_line(
+            "producer_signature",
+            &s.producer.signature_validity,
+            &s.producer.detail,
+        ));
+        let _ = writeln!(
+            out,
+            "  {:<22} {:<38} {}",
+            "producer_trust",
+            s.producer.trust.label(),
+            s.producer
+                .trust_source
+                .map_or("none — no producer key was available for this session", |t| t.label())
         );
         // Capture completeness: a separate axis from every property above.
         // It never feeds the verdict; the verdict never implies it.
@@ -460,6 +513,14 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     let _ = writeln!(
         out,
         "  MISMATCH            the examiner pinned keys and this session's signatures do not verify under any of them"
+    );
+    let _ = writeln!(
+        out,
+        "What the producer signature means (the capture host's own key over each camera record body, minus producer_sig — a separate trust boundary from the O-Node chain key; neither key ever stands in for the other):"
+    );
+    let _ = writeln!(
+        out,
+        "  The bundle carries only each record's producer_key_id, never the producer key: the key must arrive out of band (--producer-key), and producer trust uses the signer-trust vocabulary above, applied to the producer key."
     );
     let _ = writeln!(
         out,

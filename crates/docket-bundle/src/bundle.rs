@@ -31,6 +31,7 @@ use crate::camera::{claimed_camera_ids, grade_capture_completeness, CaptureGrade
 use crate::hash::is_hex_digest_64;
 use crate::limits::Limits;
 use crate::minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
+use crate::producer::{grade_producer_signatures, ProducerSignerReport};
 use crate::seal::Seal;
 use crate::sig::PublicKey;
 use crate::verify::{
@@ -50,8 +51,12 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// `capture_completeness` object and the top-level `boundary` object
 /// (`source_device_established`, `capture_completeness`); no existing field
 /// changed shape or meaning, no verdict or exit code changed, so a tolerant
-/// consumer of 0.2 sees two new keys and nothing else.
-pub const REPORT_VERSION: &str = "docket-report/0.3";
+/// consumer of 0.2 sees two new keys and nothing else. `0.4` added the
+/// per-session `producer` object (producer-signature validity / producer
+/// trust — the capture host's key, a separate boundary from the O-Node
+/// chain key) and the top-level `producer_key_ids` list; again additive
+/// only: no existing field changed shape or meaning, no verdict changed.
+pub const REPORT_VERSION: &str = "docket-report/0.4";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -783,6 +788,15 @@ impl Bundle {
     /// overrides any signature carried in the bundle (for bundles exported
     /// before the signature travelled in-band).
     pub fn verify_with_seal_key(&self, check: Option<&SealKeyCheck<'_>>) -> BundleReport {
+        self.verify_with(check, &[])
+    }
+
+    /// Like [`Bundle::verify_with_seal_key`], with examiner-supplied
+    /// producer PUBLIC keys (`--producer-key`, out of band — a bundle never
+    /// carries a producer key, only each camera record's `producer_key_id`).
+    /// Empty means none were supplied: every session's producer signature is
+    /// UNVERIFIABLE and producer trust UNESTABLISHED, stated per session.
+    pub fn verify_with(&self, check: Option<&SealKeyCheck<'_>>, producer_keys: &[PublicKey]) -> BundleReport {
         let mut sessions = Vec::with_capacity(self.sessions.len());
         for chain in &self.sessions {
             let report = verify_session(chain, &self.keyring);
@@ -813,11 +827,13 @@ impl Bundle {
                 }
             };
             let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
+            let producer = grade_producer_signatures(chain, self.artifacts.as_ref(), producer_keys);
             sessions.push(SessionOutcome {
                 report,
                 seal_head_match,
                 artifact_binding,
                 artifact_coverage,
+                producer,
                 capture_completeness,
             });
         }
@@ -845,6 +861,7 @@ impl Bundle {
             key_ids: self.keyring.key_ids().map(str::to_owned).collect(),
             pinned_key_ids: self.keyring.pinned_key_ids().map(str::to_owned).collect(),
             bundle_key_ids: self.keyring.bundle_key_ids().map(str::to_owned).collect(),
+            producer_key_ids: producer_keys.iter().map(|k| k.key_id().to_owned()).collect(),
             sessions,
             seal,
             boundary,
@@ -939,6 +956,13 @@ pub struct SessionOutcome {
     /// Present alongside `artifact_binding`: per-entry body coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_coverage: Option<ArtifactCoverage>,
+    /// Producer-signature result: did the CAPTURE HOST's own key sign the
+    /// carried camera records? A third distinct result beside chain-signature
+    /// validity and signer trust — the O-Node chain key must never stand in
+    /// for the producer key. Validity and trust are separate axes here too.
+    /// Always graded; a session whose evidence cannot carry the answer says
+    /// so.
+    pub producer: ProducerSignerReport,
     /// Capture completeness: was the camera recording across this session's
     /// whole window, by the capture policy carried inside the chain-signed
     /// camera record? A separate
@@ -1040,9 +1064,9 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             .to_owned()
     } else {
         format!(
-            "the signed producer identifies the source as {}; no independently trusted device \
-             credential establishes that identity — the signatures prove the producer key \
-             committed to these bytes, not that they originated at that physical camera",
+            "the camera records identify the source as {}; no independently trusted device \
+             credential establishes that identity — the signatures prove what the signing keys \
+             committed to, not that the bytes originated at that physical camera",
             camera_ids
                 .iter()
                 .map(|id| format!("{id:?}"))
@@ -1095,6 +1119,11 @@ pub struct BundleReport {
     /// internal consistency, never identity.
     #[serde(default)]
     pub bundle_key_ids: Vec<String>,
+    /// Producer PUBLIC keys the examiner supplied out of band
+    /// (`--producer-key`). Empty when none were supplied — the bundle itself
+    /// never carries a producer key, only each record's `producer_key_id`.
+    #[serde(default)]
+    pub producer_key_ids: Vec<String>,
     pub sessions: Vec<SessionOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal: Option<SealOutcome>,

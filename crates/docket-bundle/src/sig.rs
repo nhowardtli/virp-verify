@@ -102,6 +102,16 @@ impl PublicKey {
         let sig = signature_from_hex(signature_hex)?;
         self.verify(domain, canonical, &sig)
     }
+
+    /// Verify a detached signature with NO domain tag — the producer's
+    /// `producer_sig` construction signs the canonical body bytes directly
+    /// (see [`crate::producer`]). Strict verification, same as [`PublicKey::verify`].
+    pub fn verify_raw(&self, message: &[u8], signature: &[u8; 64]) -> Result<(), SigError> {
+        let sig = Signature::from_bytes(signature);
+        self.key
+            .verify_strict(message, &sig)
+            .map_err(|_| SigError::BadSignature)
+    }
 }
 
 /// Decode a stored 128-hex-char signature.

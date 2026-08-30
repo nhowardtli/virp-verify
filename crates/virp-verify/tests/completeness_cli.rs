@@ -116,7 +116,7 @@ fn source_device_is_no_even_on_a_bundle_that_verifies_at_full_strength() {
     assert!(out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED"), "{out}");
     assert!(out.contains("source_device_established    NO"), "{out}");
     assert!(
-        out.contains("the signed producer identifies the source as \"comp-clean\""),
+        out.contains("the camera records identify the source as \"comp-clean\""),
         "{out}"
     );
 }

@@ -27,8 +27,10 @@ OPTIONS:
     --json               print the full report as JSON instead of text
     --pin FILE           examiner-trusted PUBLIC key(s), docket keys.json format
                          (what `export --keys` emits). Repeatable. Must arrive
-                         OUT OF BAND: only a pinned key can establish who signed
-                         (SIGNER TRUST: PINNED). A bundle's own keys.json still
+                         OUT OF BAND: SIGNER TRUST: PINNED means the signatures
+                         matched an examiner-pinned key; who holds that key, and
+                         why it is trusted, is the examiner's decision, outside
+                         this tool. A bundle's own keys.json still
                          checks signatures, but proves internal consistency
                          only — anyone can generate a keypair, sign fabricated
                          evidence, and ship the public half alongside.
@@ -70,15 +72,16 @@ RESOURCE LIMITS:
 
 EXIT CODES (deliberately NOT collapsed into pass/fail):
     0   CRYPTOGRAPHICALLY-VERIFIED  every session signed and verified under an examiner-pinned
-                                    public key: cryptography AND signer identity both held
+                                    public key: cryptography held under an examiner-selected
+                                    trust anchor
     1   FAILED                      at least one property failed: tampering or corruption
     2   bundle unreadable / usage error (nothing was verified)
     3   OPERATOR-ATTESTED           consistent, but authenticity rests on material this
                                     verifier cannot check (operator HMAC and/or an unknown key)
     4   CONSISTENT-UNAUTHENTICATED  consistent, and nothing at all attests authenticity
-    5   CRYPTOGRAPHICALLY-CONSISTENT  every signature verifies, but only under a key that
-                                    establishes no identity (bundle-provided, or outside the
-                                    examiner's pins): the cryptography held, the identity did not
+    5   CRYPTOGRAPHICALLY-CONSISTENT  every signature verifies, but under no examiner-pinned
+                                    key (bundle-provided, or outside the examiner's pins): the
+                                    cryptography held without an examiner-selected trust anchor
     6   coverage failure (--fail-on-coverage only): capture completeness graded
                                     INTERRUPTED / UNEXPLAINED or FAILED while the cryptographic
                                     verdict did not fail; without the flag the same bundle keeps
@@ -326,8 +329,8 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         if !report.bundle_key_ids.is_empty() {
             let _ = writeln!(
                 out,
-                "keys:    {} bundle-provided key(s): {} — carried inside the bundle; can establish \
-                 internal consistency, never identity",
+                "keys:    {} bundle-provided key(s): {} — carried inside the bundle; can prove \
+                 internal consistency, never stand as an examiner-selected trust anchor",
                 report.bundle_key_ids.len(),
                 report.bundle_key_ids.join(", ")
             );
@@ -384,8 +387,8 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
             out.push_str(&status_line("artifact_binding", binding, &detail));
         }
         // The two signer axes, rendered separately and never merged: whether
-        // the cryptography held, and whether the key that checked it
-        // establishes who signed.
+        // the cryptography held, and whether the key that checked it was
+        // examiner-pinned.
         out.push_str(&status_line(
             "signature_validity",
             &r.signer.signature_validity,

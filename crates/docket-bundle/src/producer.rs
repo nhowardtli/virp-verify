@@ -144,8 +144,8 @@ pub fn read_producer_key_file(path: &std::path::Path) -> Result<PublicKey, Strin
 
 /// The two-axis producer-signature summary for one session: validity (did
 /// the producer signature verify over the recomputed canonical body) and
-/// trust (does the verifying key establish the producer's identity). Two
-/// results, rendered separately, never collapsed — mirroring
+/// trust (does the signature verify under the examiner-pinned producer
+/// key?). Two results, rendered separately, never collapsed — mirroring
 /// [`crate::verify::SignerReport`] for the chain key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProducerSignerReport {

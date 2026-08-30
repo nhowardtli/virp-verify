@@ -568,11 +568,11 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     let _ = writeln!(
         out,
-        "  INTERRUPTED / ACCOUNTED    an interval is not covered, and a signed gap record or the signed policy's stated tolerance accounts for it. Accounted for is not complete."
+        "  INTERRUPTED / ACCOUNTED    an interval is not covered, and a gap record inside a producer-signed camera manifest — or the signed policy's stated tolerance — accounts for it. Accounted for is not complete."
     );
     let _ = writeln!(
         out,
-        "  INTERRUPTED / UNEXPLAINED  an interval is not covered, no signed gap record explains it, and it exceeds the signed policy"
+        "  INTERRUPTED / UNEXPLAINED  an interval is not covered, no gap record inside a producer-signed camera manifest explains it, and it exceeds the signed policy"
     );
     let _ = writeln!(
         out,

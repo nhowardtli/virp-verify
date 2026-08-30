@@ -5,10 +5,10 @@
 //! recording the whole time: a producer that stops for fourteen minutes and
 //! resumes leaves a perfectly contiguous chain with real time missing.
 //!
-//! `camera_segment/2` bodies carry the producer's own signed
-//! `capture_policy` — nominal segment duration, permitted boundary jitter,
-//! and the largest hole tolerated without a signed gap record. The policy is
-//! inside the signed bytes precisely so that no one, operator included, can
+//! `camera_segment/2` bodies carry the `capture_policy` inside the
+//! chain-signed camera record — nominal segment duration, permitted boundary
+//! jitter, and the largest hole tolerated without a signed gap record. The
+//! policy is inside the chain-signed bytes so that no one, operator included, can
 //! loosen the tolerance afterwards to make a bad window look clean. Only
 //! against that declaration can observed segment timing be graded.
 //!
@@ -60,7 +60,8 @@ const SCHEMA_V2: &str = "camera_segment/2";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "grade", rename_all = "snake_case")]
 pub enum CaptureGrade {
-    /// Every boundary within the producer's own signed policy. Says nothing
+    /// Every boundary within the capture policy carried inside the
+    /// chain-signed camera record. Says nothing
     /// about who signed — that is the cryptographic axes' statement.
     Continuous,
     /// Not covered, and accounted for by a signed gap record or the signed

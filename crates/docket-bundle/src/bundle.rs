@@ -940,7 +940,8 @@ pub struct SessionOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_coverage: Option<ArtifactCoverage>,
     /// Capture completeness: was the camera recording across this session's
-    /// whole window, by the producer's own signed capture policy? A separate
+    /// whole window, by the capture policy carried inside the chain-signed
+    /// camera record? A separate
     /// axis from every cryptographic property above — it never feeds the
     /// verdict, and the verdict never implies it (chain contiguity proves no
     /// missing sequence number, not no missing time). Always graded; a

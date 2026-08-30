@@ -467,7 +467,7 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     let _ = writeln!(
         out,
-        "  CONTINUOUS                 every uncovered interval between capture windows is within the producer's own signed capture policy"
+        "  CONTINUOUS                 every uncovered interval between capture windows is within the capture policy carried inside the chain-signed camera record"
     );
     let _ = writeln!(
         out,

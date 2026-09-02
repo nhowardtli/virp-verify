@@ -284,7 +284,18 @@ fn stripped_entry_signature_fails_even_keyless_exit_1() {
     let (code, out, _) = run(&[dir.to_str().unwrap()]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("session_key_binding    FAILED"), "{out}");
-    assert!(out.contains("stripped signature"), "{out}");
+    // The detail states the inconsistency and lists the causes without
+    // ranking them; it must not assert an identified attack. The rule name
+    // stays so an examiner can reproduce the exact check.
+    assert!(
+        out.contains("cryptographic inconsistency: an Ed25519-signed head covers entries that carry no signature"),
+        "{out}"
+    );
+    assert!(out.contains("This verifier cannot distinguish these"), "{out}");
+    assert!(
+        out.contains("Rule: stripped-signature (session-granularity key rule)"),
+        "{out}"
+    );
     let nokeys = variant(
         "strip-entry-sig-nokeys",
         "sessions/inv-lock-1.json",

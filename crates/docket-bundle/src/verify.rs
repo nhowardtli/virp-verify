@@ -208,7 +208,9 @@ pub enum Status {
     /// The property is not present in the evidence (e.g. an unsigned
     /// pre-D-1 session has no signatures). Neutral.
     Absent,
-    /// Checked and wrong. Tampering or corruption.
+    /// Checked and wrong: the evidence is inconsistent with the property.
+    /// Consistent with tampering, corruption or an operational change; this
+    /// verifier does not determine which, and the detail must not claim to.
     ///
     /// Serialized as `failure`, not `detail`: `PropertyReport` flattens this
     /// enum next to its own generic `detail` field, and two `detail` keys in
@@ -340,7 +342,8 @@ pub struct SignerReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    /// At least one property FAILED. The chain is tampered or corrupt.
+    /// At least one property FAILED: the chain is cryptographically
+    /// inconsistent. Why is outside what this verifier checks.
     Failed,
     /// Every keyless property holds, the head plus every entry carry a valid
     /// Ed25519 signature, AND the verifying key was supplied by the examiner

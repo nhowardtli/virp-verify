@@ -179,9 +179,18 @@ pub enum SessionKeyError {
 impl std::fmt::Display for SessionKeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // Deliberately NOT phrased as an identified attack. The check
+            // proves an inconsistency; it cannot see which of the causes
+            // produced it, and a verifier that names one is asserting
+            // something it did not verify. The causes are listed, never
+            // ranked. The rule name stays so an examiner can reproduce the
+            // exact check, and the locator stays so they can find the entry.
             Self::StrippedSignature { sequence } => write!(
                 f,
-                "missing Ed25519 signature at sequence {sequence} in a head-signed session (stripped signature)"
+                "cryptographic inconsistency: an Ed25519-signed head covers entries that carry no \
+                 signature. Consistent with tampering, corruption, or a signing-state change inside \
+                 the session. This verifier cannot distinguish these. Rule: stripped-signature \
+                 (session-granularity key rule). First unsigned entry: sequence {sequence}."
             ),
             Self::KeyIdMismatch {
                 sequence,

@@ -81,7 +81,9 @@ EXIT CODES (deliberately NOT collapsed into pass/fail):
     0   CRYPTOGRAPHICALLY-VERIFIED  every session signed and verified under an examiner-pinned
                                     public key: cryptography held under an examiner-selected
                                     trust anchor
-    1   FAILED                      at least one property failed: tampering or corruption
+    1   FAILED                      at least one checked property is wrong: the evidence is
+                                    cryptographically inconsistent, and this verifier does not
+                                    determine why
     2   bundle unreadable / usage error (nothing was verified)
     3   OPERATOR-ATTESTED           consistent, but authenticity rests on material this
                                     verifier cannot check (operator HMAC and/or an unknown key)

@@ -132,13 +132,19 @@ def load_appendix_a():
         return json.load(f)
 
 
-def synthetic_session(n):
-    """A complete n-entry session with correct links/genesis and fake HMACs."""
+def synthetic_session(n, bodies=None):
+    """A complete n-entry session with correct links/genesis and fake HMACs.
+
+    `bodies` supplies the exact byte string each entry's artifact_hash
+    commits to; the default is b"body-<i>". Passing real device output is how
+    the redaction tests get entries whose bodies bind correctly AND carry
+    credentials."""
     entries = []
     prev = genesis_hash(SYNTHETIC_SESSION)
     for i in range(n):
+        body = bodies[i] if bodies else b"body-%d" % i
         f = {
-            "artifact_hash": sha256_hex(b"body-%d" % i),
+            "artifact_hash": sha256_hex(body),
             "artifact_hash_alg": "sha256",
             "artifact_id": "obs:synthetic:%04d" % i,
             "artifact_schema_version": "1",
@@ -955,3 +961,259 @@ class ArtifactBodies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- redacted export (--redacted) -------------------------------------------
+
+
+# Real shapes, exactly as a device would emit them. Bodies 0 and 2 carry
+# credentials; 1 and 3 do not; 4 is not text at all (rule 3, fail-closed).
+REDACTION_BODIES = [
+    b"R24#show running-config\n"
+    b"enable secret 5 $1$mERr$b0EjM9pUzYnwGl0Wxq4Ha0\n"
+    b"snmp-server community s3cr3tRO RO 99\n",
+    b"R24#show ip interface brief\nGigabitEthernet0/0  10.2.13.1  YES manual up  up\n",
+    b'{"device":"sw-1","api_key":"abc123","status":"ok"}\n',
+    b"pve-lab$ qm list\n 100 DC01 stopped\n 313 onode-b running\n",
+    bytes([0x00, 0x01, 0xFF, 0xFE]) + b"OK",
+]
+SECRETS_IN_BODIES = [b"$1$mERr$b0EjM9pUzYnwGl0Wxq4Ha0", b"s3cr3tRO", b"abc123"]
+CLEAN_BODY_INDEXES = [1, 3]
+WITHHELD_BODY_INDEXES = [0, 2, 4]
+
+
+def build_redaction_db(path):
+    """A snapshot whose synthetic session carries REDACTION_BODIES, each body
+    stored so it hashes to its entry's artifact_hash."""
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.executescript(ARTIFACTS_SCHEMA)
+    entries, head = synthetic_session(len(REDACTION_BODIES), bodies=REDACTION_BODIES)
+    for f, hh, mac in entries:
+        insert_entry(conn, f, hh, mac)
+    insert_head(conn, head)
+    import base64 as b64
+    for i, body in enumerate(REDACTION_BODIES):
+        try:
+            content = body.decode("utf-8")
+        except UnicodeDecodeError:
+            content = "base64:" + b64.b64encode(body).decode("ascii")
+        add_artifact(conn, "obs:synthetic:%04d" % i, sha256_hex(body), content)
+    conn.commit()
+    conn.close()
+
+
+class RedactedExport(unittest.TestCase):
+    """--redacted: entries whose body matches export hash-only, the bytes
+    never leave, and the verifier reaches the same verdicts it reached on the
+    unredacted export."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-redacted-")
+        self.db = os.path.join(self.tmp, "snapshot.db")
+        build_redaction_db(self.db)
+        self.db_sha = sha256_file(self.db)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def out(self, name):
+        return os.path.join(self.tmp, name)
+
+    def export(self, name, *extra):
+        out = self.out(name)
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--artifacts", *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return out, r.stdout
+
+    def test_secret_bearing_bodies_are_withheld_and_clean_ones_are_carried(self):
+        out, stdout = self.export("redacted", "--redacted")
+
+        for i in CLEAN_BODY_INDEXES:
+            path = os.path.join(out, "artifacts", sha256_hex(REDACTION_BODIES[i]))
+            self.assertTrue(os.path.exists(path), "a clean body was withheld: %d" % i)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), REDACTION_BODIES[i])
+        for i in WITHHELD_BODY_INDEXES:
+            path = os.path.join(out, "artifacts", sha256_hex(REDACTION_BODIES[i]))
+            self.assertFalse(os.path.exists(path), "a secret-bearing body was exported: %d" % i)
+
+        # Not one secret byte anywhere under --out.
+        for root, _dirs, files in os.walk(out):
+            for name in files:
+                with open(os.path.join(root, name), "rb") as f:
+                    blob = f.read()
+                for secret in SECRETS_IN_BODIES:
+                    self.assertNotIn(secret, blob, "%s leaked %r" % (name, secret))
+
+        self.assertIn("3 of 5 distinct bodies withheld", stdout)
+        self.assertEqual(sha256_file(self.db), self.db_sha)
+
+    def test_manifest_records_the_policy_and_every_withheld_entry(self):
+        out, _ = self.export("manifest", "--redacted")
+        with open(os.path.join(out, "manifest.json")) as f:
+            manifest = json.load(f)
+        red = manifest["redaction"]
+        self.assertEqual(red["policy"], "docket-mask-v1")
+        self.assertEqual(red["entries_withheld"], 3)
+        self.assertEqual(len(red["withheld"]), 3)
+        by_hash = {w["artifact_hash"]: w for w in red["withheld"]}
+        for i in WITHHELD_BODY_INDEXES:
+            w = by_hash[sha256_hex(REDACTION_BODIES[i])]
+            self.assertEqual(w["bytes"], len(REDACTION_BODIES[i]))
+        # The non-text body was withheld by the fail-closed rule, not by a
+        # recognized secret shape, and the manifest says which.
+        self.assertTrue(by_hash[sha256_hex(REDACTION_BODIES[4])]["unclassifiable"])
+        self.assertFalse(by_hash[sha256_hex(REDACTION_BODIES[0])]["unclassifiable"])
+        # Withheld hashes are NOT listed as carried artifacts.
+        carried = {a["artifact_hash"] for a in manifest["artifacts"]}
+        for i in WITHHELD_BODY_INDEXES:
+            self.assertNotIn(sha256_hex(REDACTION_BODIES[i]), carried)
+
+    def test_gate_the_verifier_reaches_the_same_verdicts_as_the_unredacted_export(self):
+        """The gate. Real virp-verify on both exports of the same snapshot:
+        the per-session verdicts must be identical. If one moves, that is a
+        bug in the exporter, never a reason to touch the verifier."""
+        plain, _ = self.export("plain")
+        redacted, _ = self.export("gate", "--redacted")
+
+        code_p, text_p, rep_p = verify(plain)
+        code_r, text_r, rep_r = verify(redacted)
+
+        self.assertEqual(
+            {s["session_id"]: s["verdict"] for s in rep_p["sessions"]},
+            {s["session_id"]: s["verdict"] for s in rep_r["sessions"]},
+            "a per-session verdict moved under --redacted",
+        )
+        self.assertEqual(rep_p["verdict"], rep_r["verdict"])
+        self.assertEqual(code_p, code_r)
+
+        # Binding still VERIFIED: the bodies that DID travel still hash to
+        # their entries, and the withheld ones are simply not carried.
+        s_r = session_report(rep_r, SYNTHETIC_SESSION)
+        self.assertEqual(s_r["artifact_binding"]["status"], "verified")
+        cov = s_r["artifact_coverage"]
+        self.assertEqual((cov["entry_count"], cov["entries_with_body"]), (5, 2))
+        self.assertEqual(cov["hash_only_sequences"], WITHHELD_BODY_INDEXES)
+
+        # And the examiner is told that hash-only HERE was a choice.
+        self.assertIn("redacted: this export withheld 3 artifact bodies", text_r)
+        self.assertIn("docket-mask-v1", text_r)
+        self.assertNotIn("redacted:", text_p)
+
+    def test_redacted_without_artifacts_is_a_named_error(self):
+        r = run_export("--db", self.db, "--out", self.out("noart"), "--sessions", SYNTHETIC_SESSION, "--redacted")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("a hash-only bundle is already body-free", r.stderr)
+        self.assertFalse(os.path.exists(self.out("noart")))
+
+    def test_a_missing_pattern_table_fails_before_anything_is_written(self):
+        r = run_export(
+            "--db", self.db, "--out", self.out("nopol"), "--sessions", SYNTHETIC_SESSION,
+            "--artifacts", "--redacted",
+            env={"DOCKET_MASK_PATTERNS": os.path.join(self.tmp, "no-such-table.json")},
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("cannot load the masking policy", r.stderr)
+        self.assertFalse(os.path.exists(self.out("nopol")))
+
+    def test_default_export_carries_everything_and_has_no_redaction_block(self):
+        out, _ = self.export("full")
+        with open(os.path.join(out, "manifest.json")) as f:
+            manifest = json.load(f)
+        self.assertNotIn("redaction", manifest)
+        self.assertEqual(len(manifest["artifacts"]), 5)
+
+
+# --- the reference-bundle gate ---------------------------------------------
+
+
+# The two reference bundles this session was gated against, with the snapshot
+# each was exported from. They live outside the repo (they are evidence, not
+# fixtures), so these tests SKIP when the laptop does not have them rather
+# than failing on a machine that never had them.
+REFERENCE_GATES = [
+    ("313-human", os.path.expanduser("<reference-bundles>/case-a/bundle"),
+     os.path.expanduser("<reference-bundles>/case-a/snapshot.db")),
+    ("fortigate-authority", os.path.expanduser("<reference-bundles>/case-b/bundle"),
+     os.path.expanduser("<reference-bundles>/case-b/snapshot.db")),
+]
+
+
+class ReferenceBundleGate(unittest.TestCase):
+    """The gate: a --redacted export of a REAL bundle's sessions must reach
+    the same verdicts, from the real virp-verify, as the unredacted export of
+    the same sessions. If a verdict moves, that is a bug in the exporter and
+    never a reason to touch the verifier."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-refgate-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _export(self, name, db, sids, tag, ref, *extra):
+        out = os.path.join(self.tmp, "%s-%s" % (name, tag))
+        r = run_export("--db", db, "--out", out, "--sessions", *sids, "--artifacts", *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # Both exports get the reference bundle's own keys, so the signature
+        # tiers are the real ones and the comparison is not made trivial by
+        # everything being KEYLESS.
+        keys = os.path.join(ref, "keys.json")
+        if os.path.exists(keys):
+            shutil.copy(keys, os.path.join(out, "keys.json"))
+            with open(os.path.join(out, "manifest.json")) as f:
+                m = json.load(f)
+            m["keys"] = "keys.json"
+            with open(os.path.join(out, "manifest.json"), "w") as f:
+                json.dump(m, f, indent=2, sort_keys=True)
+        return out, r.stdout
+
+    def test_gate_redacted_export_of_the_reference_bundles_moves_no_verdict(self):
+        ran = 0
+        for name, ref, db in REFERENCE_GATES:
+            if not (os.path.isdir(ref) and os.path.exists(db)):
+                continue
+            ran += 1
+            with self.subTest(bundle=name):
+                with open(os.path.join(ref, "manifest.json")) as f:
+                    sids = [s["session_id"] for s in json.load(f)["sessions"]]
+                plain, _ = self._export(name, db, sids, "plain", ref)
+                redacted, out = self._export(name, db, sids, "redacted", ref, "--redacted")
+
+                code_p, _, rep_p = verify(plain)
+                code_r, text_r, rep_r = verify(redacted)
+
+                self.assertEqual(
+                    {s["session_id"]: s["verdict"] for s in rep_p["sessions"]},
+                    {s["session_id"]: s["verdict"] for s in rep_r["sessions"]},
+                    "a per-session verdict moved under --redacted",
+                )
+                self.assertEqual(rep_p["verdict"], rep_r["verdict"])
+                self.assertEqual(code_p, code_r)
+
+                # Stronger than the gate asks for: no PROPERTY moved either.
+                def props(rep):
+                    return {(s["session_id"], p["name"]): p["status"] for s in rep["sessions"] for p in s["properties"]}
+
+                self.assertEqual(props(rep_p), props(rep_r), "a property status moved under --redacted")
+
+                # Every withheld body is absent, whole, from the export.
+                with open(os.path.join(redacted, "manifest.json")) as f:
+                    red = json.load(f)["redaction"]
+                bodies = []
+                for w in red["withheld"]:
+                    self.assertFalse(os.path.exists(os.path.join(redacted, "artifacts", w["artifact_hash"])))
+                    with open(os.path.join(plain, "artifacts", w["artifact_hash"]), "rb") as f:
+                        bodies.append(f.read())
+                for root, _dirs, files in os.walk(redacted):
+                    for fn in files:
+                        with open(os.path.join(root, fn), "rb") as f:
+                            blob = f.read()
+                        for b in bodies:
+                            self.assertNotIn(b, blob, "a withheld body survived in %s" % fn)
+
+                if red["withheld"]:
+                    self.assertIn("redacted: this export withheld", text_r)
+        if ran == 0:
+            self.skipTest("no reference bundle + source snapshot pair present on this machine")

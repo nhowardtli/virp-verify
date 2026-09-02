@@ -5,7 +5,7 @@ VIRP chain database snapshot.
 
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> \
         --sessions <id> [<id> ...] [--seal <seal-2026-08.json>] [--artifacts] \
-        [--keys <pubfile> [<pubfile> ...]] [--seal-sig <file.minisig>]
+        [--keys <pubfile> [<pubfile> ...]] [--seal-sig <file.minisig>] [--redacted]
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> --all-sessions
     python3 export_bundle.py --db <snapshot.db> --list-sessions
 
@@ -57,6 +57,12 @@ seal/<file>.minisig  (--seal-sig only) the detached minisign SIGNATURE over
                 it is a claim the verifier grades. The PUBLIC KEY that
                 checks it never travels in the bundle: virp-verify takes it
                 out of band (--seal-key) or reports UNVERIFIABLE.
+redaction       (--redacted only) a manifest BLOCK, not a file: the policy
+                name, how many entries were withheld, and one record per
+                withheld body (artifact_hash + original byte length). It sits
+                outside every canonical byte the chain commits to: no session
+                file changes, no hash changes, and virp-verify grades a
+                redacted bundle exactly as it grades any hash-only one.
 artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
                 distinct artifact_hash, named in the manifest as
                 {"artifact_hash": "...", "path": "artifacts/..."}. The bytes
@@ -425,6 +431,37 @@ def fetch_artifact_bodies(conn, chains):
     return store, coverage
 
 
+def partition_redacted(store):
+    """Split a body store into (carried, withheld) under docket-mask-v1.
+
+    A body is WITHHELD when the masking layer would mask anything in it:
+    a vendor credential shape (rule 1), a generic secret shape (rule 2), or
+    the fail-closed unclassifiable rule (rule 3 — not valid UTF-8, oversized,
+    or carrying control characters outside whitespace). Withholding is
+    omission at export, not modification: the bytes simply do not travel. The
+    session files, the entries and every artifact_hash are untouched, so the
+    hash still commits to the original body and the verifier grades the
+    result as the hash-only bundle it now is.
+
+    Returns (carried, withheld) where withheld maps artifact_hash -> a record
+    of what was left behind."""
+    import docket_mask
+
+    carried, withheld = {}, {}
+    for ahash, data in store.items():
+        m = docket_mask.mask_body(data)
+        if m.is_clean():
+            carried[ahash] = data
+            continue
+        withheld[ahash] = {
+            "artifact_hash": ahash,
+            "bytes": len(data),
+            "spans_masked": m.redactions,
+            "unclassifiable": m.whole_body,
+        }
+    return carried, withheld
+
+
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -639,7 +676,26 @@ def write_bytes(path, data):
     return hashlib.sha256(data).hexdigest()
 
 
-def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False, key_paths=None, seal_sig_path=None):
+def run_export(
+    db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False, key_paths=None,
+    seal_sig_path=None, redacted=False,
+):
+    if redacted and not artifacts:
+        raise ExportError(
+            "--redacted withholds bodies that carry secrets, and a bundle without --artifacts carries "
+            "no bodies at all\n"
+            "  add --artifacts, or drop --redacted: a hash-only bundle is already body-free"
+        )
+    if redacted:
+        # Resolved before anything is read or written: a missing pattern table
+        # must not leave a half-written bundle, and must never silently
+        # degrade to "no rules".
+        try:
+            import docket_mask
+
+            docket_mask.policy()
+        except Exception as e:
+            raise ExportError(f"--redacted: cannot load the masking policy: {e}") from e
     if os.path.lexists(out_dir):
         raise ExportError(f"output directory already exists: {out_dir} (refusing to overwrite; choose a new --out)")
     if seal_sig_path and not seal_path:
@@ -688,6 +744,10 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts
     finally:
         conn.close()
 
+    withheld = {}
+    if redacted:
+        body_store, withheld = partition_redacted(body_store)
+
     written = []  # (relative path, sha256)
     os.makedirs(os.path.join(out_dir, "sessions"), exist_ok=False)
     taken = set()
@@ -729,6 +789,16 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts
             digest = write_bytes(os.path.join(out_dir, rel), body_store[ahash])
             written.append((rel, digest))
             manifest["artifacts"].append({"artifact_hash": ahash, "path": rel})
+    if redacted:
+        import docket_mask
+
+        # Outside the canonical bytes by construction: the manifest is not
+        # hashed into any chain, and nothing in a session file mentions this.
+        manifest["redaction"] = {
+            "policy": docket_mask.policy_name(),
+            "entries_withheld": len(withheld),
+            "withheld": [withheld[h] for h in sorted(withheld)],
+        }
     digest = write_json(os.path.join(out_dir, "manifest.json"), manifest)
     written.insert(0, ("manifest.json", digest))
 
@@ -757,6 +827,19 @@ def run_export(db_path, out_dir, session_ids, seal_path, all_sessions, artifacts
             print(line)
     if artifacts:
         print(f"  artifact bodies carried: {len(body_store)} distinct artifact_hash file(s) under artifacts/")
+    if redacted:
+        import docket_mask
+
+        total = len(body_store) + len(withheld)
+        print(
+            f"  redaction: policy {docket_mask.policy_name()}; {len(withheld)} of {total} distinct "
+            f"bodies withheld (exported hash-only), {sum(w['bytes'] for w in withheld.values())} bytes "
+            f"left behind"
+        )
+        print(
+            "  the withheld entries keep their artifact_hash and their place in the chain; "
+            "virp-verify grades them exactly as it grades any hash-only entry"
+        )
     print("files written (sha256):")
     for rel, digest in written:
         print(f"  {digest}  {rel}")
@@ -794,6 +877,14 @@ def main(argv=None):
         help="also carry artifact BODIES (raw bytes from the artifacts table) so the verifier can grade "
         "artifact binding and a reader can see what happened; without it the bundle is hash-only, as before",
     )
+    p.add_argument(
+        "--redacted",
+        action="store_true",
+        help="withhold every body the docket-mask-v1 policy would mask: those entries export hash-only, "
+        "their bytes never leave, and the manifest records how many and which. Requires --artifacts. "
+        "Nothing is modified — omission at export, never rewriting; every artifact_hash still commits "
+        "to the original body and no verdict moves",
+    )
     p.add_argument("--list-sessions", action="store_true", help="list session ids in the database and exit")
     args = p.parse_args(argv)
 
@@ -815,7 +906,7 @@ def main(argv=None):
             p.error("give exactly one of --sessions <id>... or --all-sessions")
         return run_export(
             args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts, args.keys,
-            args.seal_sig,
+            args.seal_sig, args.redacted,
         )
     except ExportError as e:
         print(f"export_bundle.py: error: {e}", file=sys.stderr)

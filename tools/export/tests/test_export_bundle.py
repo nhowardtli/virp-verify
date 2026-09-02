@@ -1096,10 +1096,86 @@ class RedactedExport(unittest.TestCase):
         self.assertEqual((cov["entry_count"], cov["entries_with_body"]), (5, 2))
         self.assertEqual(cov["hash_only_sequences"], WITHHELD_BODY_INDEXES)
 
-        # And the examiner is told that hash-only HERE was a choice.
-        self.assertIn("redacted: this export withheld 3 artifact bodies", text_r)
-        self.assertIn("docket-mask-v1", text_r)
-        self.assertNotIn("redacted:", text_p)
+        # And the examiner is told that hash-only HERE was a choice — with
+        # the count RECOMPUTED from the bundle, and the policy name flagged
+        # as the unsigned claim it is.
+        self.assertIn("redaction: docket-mask-v1 (declared, unsigned), 3 withheld (recomputed)", text_r)
+        self.assertIn("policy name above is a CLAIM", text_r)
+        self.assertNotIn("INCONSISTENT", text_r)
+        self.assertNotIn("redaction:", text_p)
+
+    def test_a_tampered_manifest_count_is_recomputed_and_flagged(self):
+        """The redaction block is metadata: nothing hashes it and nothing
+        signs it. The verifier must recompute the count from the bundle's own
+        hash-only entries and say so when the manifest disagrees — and it
+        must not move a verdict either way."""
+        out, _ = self.export("tampered", "--redacted")
+        mpath = os.path.join(out, "manifest.json")
+        with open(mpath) as f:
+            manifest = json.load(f)
+        honest_code, honest_text, honest_report = verify(out)
+        self.assertIn("3 withheld (recomputed)", honest_text)
+        self.assertNotIn("INCONSISTENT", honest_text)
+
+        # (a) Inflated count: claim 99 withheld, carry the same bundle.
+        manifest["redaction"]["entries_withheld"] = 99
+        with open(mpath, "w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        code, text, report = verify(out)
+        self.assertIn("redaction: docket-mask-v1 (declared, unsigned), 3 withheld (recomputed)", text)
+        self.assertIn("INCONSISTENT: the manifest declares 99 withheld; the bundle supports 3", text)
+        self.assertIn("recomputed number is the one to trust", text)
+        self.assertEqual(code, honest_code, "a tampered manifest count moved the exit code")
+        self.assertEqual(report["verdict"], honest_report["verdict"])
+        self.assertEqual(
+            [s["verdict"] for s in report["sessions"]],
+            [s["verdict"] for s in honest_report["sessions"]],
+            "a tampered manifest count moved a session verdict",
+        )
+
+        # (b) A withheld claim about a body the bundle actually carries.
+        carried = manifest["artifacts"][0]["artifact_hash"]
+        manifest["redaction"]["entries_withheld"] = 4
+        manifest["redaction"]["withheld"].append(
+            {"artifact_hash": carried, "bytes": 1, "spans_masked": 1, "unclassifiable": False}
+        )
+        with open(mpath, "w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        code, text, _ = verify(out)
+        self.assertIn("3 withheld (recomputed)", text)  # the false claim does NOT count
+        self.assertIn("named as withheld but their bodies ARE carried", text)
+        self.assertIn(carried, text)
+        self.assertEqual(code, honest_code)
+
+        # (c) A withheld claim about a hash no entry in this bundle mentions.
+        ghost = "f" * 64
+        manifest["redaction"]["withheld"] = [
+            {"artifact_hash": ghost, "bytes": 1, "spans_masked": 1, "unclassifiable": False}
+        ]
+        manifest["redaction"]["entries_withheld"] = 1
+        with open(mpath, "w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        code, text, _ = verify(out)
+        self.assertIn("0 withheld (recomputed)", text)
+        self.assertIn("no entry in this bundle references them", text)
+        self.assertIn(ghost, text)
+        self.assertEqual(code, honest_code)
+
+    def test_the_policy_name_is_repeated_never_verified(self):
+        """A manifest can name any policy it likes. The verifier says which
+        name was claimed and marks it unsigned; it never asserts the patterns
+        that name implies actually ran."""
+        out, _ = self.export("claimed", "--redacted")
+        mpath = os.path.join(out, "manifest.json")
+        with open(mpath) as f:
+            manifest = json.load(f)
+        manifest["redaction"]["policy"] = "not-a-real-policy-v9"
+        with open(mpath, "w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        code, text, _ = verify(out)
+        self.assertIn("redaction: not-a-real-policy-v9 (declared, unsigned), 3 withheld (recomputed)", text)
+        self.assertIn("nothing in a bundle can prove which patterns ran", text)
+        self.assertEqual(code, 3)
 
     def test_redacted_without_artifacts_is_a_named_error(self):
         r = run_export("--db", self.db, "--out", self.out("noart"), "--sessions", SYNTHETIC_SESSION, "--redacted")
@@ -1214,6 +1290,11 @@ class ReferenceBundleGate(unittest.TestCase):
                             self.assertNotIn(b, blob, "a withheld body survived in %s" % fn)
 
                 if red["withheld"]:
-                    self.assertIn("redacted: this export withheld", text_r)
+                    self.assertIn(
+                        "redaction: docket-mask-v1 (declared, unsigned), %d withheld (recomputed)"
+                        % len(red["withheld"]),
+                        text_r,
+                    )
+                    self.assertNotIn("INCONSISTENT", text_r)
         if ran == 0:
             self.skipTest("no reference bundle + source snapshot pair present on this machine")

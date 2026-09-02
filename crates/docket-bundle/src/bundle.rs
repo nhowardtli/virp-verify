@@ -192,6 +192,11 @@ pub enum BundleError {
     },
     UnsupportedKeyAlgorithm(String),
     InvalidKey(String),
+    /// The file is neither of the two accepted key-file forms.
+    KeyFileForm {
+        path: PathBuf,
+        detail: String,
+    },
     SessionIdMismatch {
         manifest: String,
         file: String,
@@ -271,6 +276,15 @@ impl std::fmt::Display for BundleError {
             }
             Self::UnsupportedKeyAlgorithm(a) => write!(f, "unsupported key algorithm {a:?} (want ed25519)"),
             Self::InvalidKey(k) => write!(f, "public key {k} is not a valid Ed25519 key"),
+            Self::KeyFileForm { path, detail } => write!(
+                f,
+                "key file {}: {detail}. A key file is either {PUBLIC_KEY_HEX_LEN} hex characters — \
+                 the raw Ed25519 PUBLIC key as it lives on the daemon host, trailing newline \
+                 allowed — or a docket keys.json object {{\"keys\": [{{\"key_id\", \"algorithm\", \
+                 \"public_key_hex\"}}]}}. Raw 32-byte binary is not accepted by either side of \
+                 Docket: hex it first (xxd -p -c 64)",
+                path.display()
+            ),
             Self::SessionIdMismatch { manifest, file } => {
                 write!(f, "manifest names session {manifest:?} but the file says {file:?}")
             }
@@ -553,7 +567,27 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, max: u64, what: &'stat
 /// ([`Keyring::insert_bundle`] vs [`Keyring::insert_pinned`]), never the
 /// file's.
 pub fn read_key_file(path: &Path, limits: &Limits) -> Result<Vec<PublicKey>, BundleError> {
-    let kf: KeyFile = read_json(path, limits.keys_bytes, "keys file")?;
+    let bytes = read_capped(path, limits.keys_bytes, "keys file")?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| BundleError::KeyFileForm {
+        path: path.to_owned(),
+        detail: "not UTF-8 text".to_owned(),
+    })?;
+    let trimmed = text.trim();
+
+    // The bare-hex form: the D-1 public half exactly as it sits on the
+    // daemon host, which is what an operator has in hand and what the
+    // exporter's --keys already takes. There is no key_id in this form to
+    // trust or distrust — it is derived from the bytes, as it is in the
+    // JSON form, where a stated id is only ever cross-checked.
+    if let Some(hex) = bare_public_key_hex(trimmed) {
+        let pk = PublicKey::from_hex(&hex).map_err(|_| BundleError::InvalidKey(hex.clone()))?;
+        return Ok(vec![pk]);
+    }
+
+    let kf: KeyFile = serde_json::from_str(trimmed).map_err(|e| BundleError::KeyFileForm {
+        path: path.to_owned(),
+        detail: format!("neither {PUBLIC_KEY_HEX_LEN} hex characters nor a readable keys.json ({e})"),
+    })?;
     let mut keys = Vec::with_capacity(kf.keys.len());
     for k in kf.keys {
         if k.algorithm != "ed25519" {
@@ -570,6 +604,16 @@ pub fn read_key_file(path: &Path, limits: &Limits) -> Result<Vec<PublicKey>, Bun
         keys.push(pk);
     }
     Ok(keys)
+}
+
+/// Length in characters of a hex-encoded raw Ed25519 public key.
+const PUBLIC_KEY_HEX_LEN: usize = 64;
+
+/// `Some(lowercased hex)` when `s` is exactly a hex-encoded raw public key
+/// and nothing else. Either case is read and lowercased, matching the
+/// exporter, because an operator's file is whatever their tooling wrote.
+fn bare_public_key_hex(s: &str) -> Option<String> {
+    (s.len() == PUBLIC_KEY_HEX_LEN && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s.to_ascii_lowercase())
 }
 
 /// The first byte in `s` that a VIRP v1 producer could not have written into

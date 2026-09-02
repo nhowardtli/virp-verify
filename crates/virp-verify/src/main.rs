@@ -320,6 +320,57 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         report.bundle_version,
         report.chain_format
     );
+    // A redacted export withholds bodies it would otherwise carry. Say so
+    // once, at the top: an examiner must not read "hash-only" as "the daemon
+    // never had this".
+    //
+    // The manifest's redaction block is metadata — outside every canonical
+    // byte, hashed by nothing, signed by nothing. So the COUNT is recomputed
+    // from the bundle's own hash-only entries rather than read, and the
+    // POLICY NAME is repeated as a claim and never verified: nothing in a
+    // bundle could establish which patterns actually ran. Neither number
+    // touches a verdict — a withheld body grades exactly as an absent one,
+    // which is why this is context and not a property.
+    if let Some(a) = bundle.audit_redaction() {
+        let _ = writeln!(
+            out,
+            "redaction: {} (declared, unsigned), {} withheld (recomputed)",
+            a.policy_claimed, a.recomputed
+        );
+        let _ = writeln!(
+            out,
+            "           those entries are hash-only HERE by choice, not because no body existed. Every \
+             artifact_hash still commits to the original bytes and no verdict below is affected. The \
+             policy name above is a CLAIM repeated from the manifest — nothing in a bundle can prove \
+             which patterns ran."
+        );
+        if a.declared != a.recomputed {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: the manifest declares {} withheld; the bundle supports {}. The \
+                 recomputed number is the one to trust — the manifest block is unsigned.",
+                a.declared, a.recomputed
+            );
+        }
+        if !a.carried_anyway.is_empty() {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: {} artifact_hash(es) are named as withheld but their bodies ARE \
+                 carried in this bundle: {}",
+                a.carried_anyway.len(),
+                a.carried_anyway.join(", ")
+            );
+        }
+        if !a.not_in_chain.is_empty() {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: {} artifact_hash(es) are named as withheld but no entry in this \
+                 bundle references them: {}",
+                a.not_in_chain.len(),
+                a.not_in_chain.join(", ")
+            );
+        }
+    }
     if report.key_ids.is_empty() {
         let _ = writeln!(
             out,

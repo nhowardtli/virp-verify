@@ -112,6 +112,48 @@ pub struct Manifest {
     /// graded and nothing in the report implies bodies exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Vec<ManifestArtifact>>,
+    /// Present when the exporter ran with `--redacted`: which bodies it
+    /// withheld, and under which policy.
+    ///
+    /// This block is METADATA, deliberately outside every canonical byte.
+    /// Nothing in a session file references it, no hash covers it, and no
+    /// property reads it. A withheld entry is hash-only evidence and grades
+    /// exactly as any other hash-only entry does; this block only lets a
+    /// reader tell "the body was never carried" apart from "the body was
+    /// carried and then held back", which are different facts about the same
+    /// verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction: Option<Redaction>,
+}
+
+/// The manifest's `redaction` block. See [`Manifest::redaction`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Redaction {
+    /// The masking policy the exporter applied, e.g. `docket-mask-v1`.
+    pub policy: String,
+    /// How many distinct bodies were withheld. A CLAIM, like everything else
+    /// in a manifest: `withheld.len()` is what a reader should count.
+    pub entries_withheld: usize,
+    #[serde(default)]
+    pub withheld: Vec<RedactedEntry>,
+}
+
+/// One withheld body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactedEntry {
+    pub artifact_hash: String,
+    /// Byte length of the body that was NOT carried. The entry's
+    /// `artifact_hash` still commits to exactly these bytes.
+    pub bytes: u64,
+    /// How many spans the mask would have replaced. `0` alongside
+    /// `unclassifiable: true` means the whole body was withheld under rule 3.
+    #[serde(default)]
+    pub spans_masked: usize,
+    /// The body was withheld by the fail-closed rule (not UTF-8, oversized,
+    /// or carrying control characters outside whitespace) rather than by a
+    /// recognized secret shape.
+    #[serde(default)]
+    pub unclassifiable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,6 +362,20 @@ pub struct Bundle {
     /// Carried artifact bodies keyed by claimed `artifact_hash`. `None` for
     /// a hash-only bundle (no `artifacts` key in the manifest).
     pub artifacts: Option<ArtifactStore>,
+}
+
+impl Bundle {
+    /// Bytes withheld for this `artifact_hash` by a `--redacted` export, if
+    /// the manifest claims any. Display only — no property reads this.
+    pub fn withheld_bytes(&self, artifact_hash: &str) -> Option<u64> {
+        self.manifest
+            .redaction
+            .as_ref()?
+            .withheld
+            .iter()
+            .find(|w| w.artifact_hash == artifact_hash)
+            .map(|w| w.bytes)
+    }
 }
 
 /// Resolve a manifest-relative path inside the bundle root.

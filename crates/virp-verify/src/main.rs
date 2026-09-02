@@ -320,6 +320,22 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         report.bundle_version,
         report.chain_format
     );
+    // A redacted export withholds bodies it would otherwise carry. Say so
+    // once, at the top: an examiner must not read "hash-only" as "the daemon
+    // never had this". Nothing about the verdict changes — a withheld body
+    // grades exactly as an absent one, which is why this is a line of
+    // context and not a property.
+    if let Some(r) = &bundle.manifest.redaction {
+        let _ = writeln!(
+            out,
+            "redacted: this export withheld {} artifact bod{} under policy {} — those entries are \
+             hash-only HERE by choice, not because no body existed. Every artifact_hash still commits \
+             to the original bytes and no verdict below is affected.",
+            r.withheld.len(),
+            if r.withheld.len() == 1 { "y" } else { "ies" },
+            r.policy
+        );
+    }
     if report.key_ids.is_empty() {
         let _ = writeln!(
             out,

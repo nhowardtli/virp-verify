@@ -25,8 +25,15 @@ ARGS:
 
 OPTIONS:
     --json               print the full report as JSON instead of text
-    --pin FILE           examiner-trusted PUBLIC key(s), docket keys.json format
-                         (what `export --keys` emits). Repeatable. Must arrive
+    --pin FILE           examiner-trusted PUBLIC key(s). Two forms, the same two
+                         the exporter's `--keys` reads: 64 hex characters (the
+                         raw Ed25519 public key as it lives on the daemon host,
+                         trailing newline fine) or a docket keys.json object
+                         (what `export --keys` emits). The key_id is derived
+                         from the bytes in both; a stated one is cross-checked
+                         and never taken on faith. Raw 32-byte binary is not
+                         accepted — hex it first (xxd -p -c 64).
+                         Repeatable. Must arrive
                          OUT OF BAND: SIGNER TRUST: PINNED means the signatures
                          matched an examiner-pinned key; who holds that key, and
                          why it is trusted, is the examiner's decision, outside

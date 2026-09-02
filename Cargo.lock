@@ -164,6 +164,7 @@ dependencies = [
 name = "docket"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "docket-bundle",
  "docket-redact",
  "rusqlite",

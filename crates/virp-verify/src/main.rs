@@ -701,6 +701,13 @@ fn render_text(
         out,
         "  milestones (unsigned in D-1), artifact bodies the bundle does not carry, and anything before the chain's capture boundary."
     );
+    // How a reader reproduces this report. Named last because it is the
+    // instruction someone acts on after reading everything above it.
+    let _ = writeln!(
+        out,
+        "Reproduce this report: virp-verify {} (add --pin <examiner-key.json> to establish signer trust)",
+        docket_bundle::bundle_display_name(path)
+    );
     if show_path {
         let _ = writeln!(out, "bundle root: {}", bundle.root.display());
     }

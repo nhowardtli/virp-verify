@@ -654,3 +654,54 @@ fn seal_key_against_a_bundle_with_no_seal_says_it_checked_nothing() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("the supplied --seal-key checked nothing"), "{out}");
 }
+
+// ---------------------------------------------------------------------------
+// The report names the bundle, not the machine that held it.
+// ---------------------------------------------------------------------------
+
+/// A report is copied, quoted and mailed. The producer's directory layout
+/// rides along in every copy and says nothing about the evidence, so the
+/// text report names the bundle by its directory name and the SHA-256 of its
+/// manifest — the identifier anyone holding the bundle can recompute.
+#[test]
+fn the_text_report_names_the_bundle_by_digest_and_never_by_path() {
+    let dir = fixture();
+    assert!(dir.is_absolute(), "fixture path must be absolute for this test");
+    let parent = dir.parent().expect("fixture has a parent").to_str().unwrap().to_owned();
+    let manifest_sha = sha256_hex_of(&dir.join("manifest.json"));
+
+    let (_, out, err) = run(&[dir.to_str().unwrap()]);
+    assert!(
+        !out.contains(&parent),
+        "the report leaks the producer's filesystem path: {out}"
+    );
+    assert!(!err.contains(&parent), "stderr leaks the path: {err}");
+    assert!(out.contains("bundle:  inv-lock-bundle"), "{out}");
+    assert!(out.contains(&format!("manifest: sha256 {manifest_sha}")), "{out}");
+}
+
+/// `--show-path` is the local-convenience escape hatch, and only that: the
+/// path appears when it is asked for and never otherwise.
+#[test]
+fn show_path_restores_the_path_and_changes_nothing_else() {
+    let dir = fixture();
+    let path = dir.to_str().unwrap();
+    let (bare_code, bare, _) = run(&[path]);
+    let (shown_code, shown, _) = run(&["--show-path", path]);
+    assert_eq!(bare_code, shown_code);
+    assert!(shown.contains(path), "{shown}");
+    assert!(shown.contains(&format!("bundle root: {path}")), "{shown}");
+    // Removing the two path lines makes the two reports identical: nothing
+    // else moved.
+    let stripped: String = shown
+        .lines()
+        .filter(|l| !l.starts_with("path:    ") && !l.starts_with("bundle root: "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(stripped, bare);
+}
+
+/// The digest in the header is the one `sha256sum manifest.json` prints.
+fn sha256_hex_of(path: &Path) -> String {
+    docket_bundle::sha256_hex(&std::fs::read(path).expect("read manifest"))
+}

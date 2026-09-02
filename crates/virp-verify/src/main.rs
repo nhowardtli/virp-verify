@@ -17,8 +17,8 @@ virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
     virp-verify [--json] [--pin FILE]... [--producer-key FILE]...
-                [--fail-on-coverage] [--max-sessions N] [--max-entries N]
-                [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
+                [--fail-on-coverage] [--show-path] [--max-sessions N]
+                [--max-entries N] [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
     <bundle-dir>   a Docket evidence bundle directory (manifest.json at its root)
@@ -56,6 +56,12 @@ OPTIONS:
                          Chain integrity and coverage stay separate
                          properties; by default only the verdict drives the
                          exit code, and a FAILED verdict still exits 1.
+    --show-path          also print the bundle's filesystem path. OFF by default:
+                         a report names the bundle by its directory name and the
+                         SHA-256 of its manifest.json, which identify the evidence
+                         without carrying the producer's directory layout into
+                         every copy of the report. Local convenience only; the
+                         digest is the identifier an examiner checks.
     --max-sessions N     reject a bundle listing more than N sessions (default 10000)
     --max-entries N      reject a bundle carrying more than N entries in total (default 1000000)
     --seal-key FILE      minisign PUBLIC key to check the seal's signature under.
@@ -108,6 +114,7 @@ fn main() -> ExitCode {
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
     let mut fail_on_coverage = false;
+    let mut show_path = false;
     let mut pending: Option<&'static str> = None;
     for arg in std::env::args_os().skip(1) {
         // A value expected by the previous flag. Taken before anything else
@@ -146,6 +153,7 @@ fn main() -> ExitCode {
         match arg.to_str() {
             Some("--json") => json = true,
             Some("--fail-on-coverage") => fail_on_coverage = true,
+            Some("--show-path") => show_path = true,
             Some(
                 f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"),
             ) => {
@@ -258,7 +266,10 @@ fn main() -> ExitCode {
             }
         }
     } else {
-        print!("{}", render_text(&path, &bundle, &report, seal_key.is_some()));
+        print!(
+            "{}",
+            render_text(&path, &bundle, &report, seal_key.is_some(), show_path)
+        );
     }
 
     let mut code = exit_code(report.verdict);
@@ -318,17 +329,36 @@ fn status_line(name: &str, status: &Status, detail: &str) -> String {
     format!("  {name:<22} {:<38} {detail}{extra}\n", status.label())
 }
 
-fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, seal_key_supplied: bool) -> String {
+fn render_text(
+    path: &std::path::Path,
+    bundle: &Bundle,
+    report: &BundleReport,
+    seal_key_supplied: bool,
+    show_path: bool,
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "virp-verify — Docket standalone VIRP chain verifier");
+    // The bundle is named by its directory name and its manifest digest, not
+    // by where it happened to sit on the machine that ran the verifier. The
+    // path says nothing about the evidence and travels with every copy of
+    // the report; the digest identifies it and anyone holding the bundle can
+    // recompute it.
     let _ = writeln!(
         out,
         "bundle:  {}  ({}, chain_format {})",
-        path.display(),
+        docket_bundle::bundle_display_name(path),
         report.bundle_version,
         report.chain_format
     );
+    let _ = writeln!(
+        out,
+        "manifest: sha256 {}  (sha256sum manifest.json)",
+        bundle.manifest_sha256
+    );
+    if show_path {
+        let _ = writeln!(out, "path:    {}  (--show-path)", path.display());
+    }
     // A redacted export withholds bodies it would otherwise carry. Say so
     // once, at the top: an examiner must not read "hash-only" as "the daemon
     // never had this".
@@ -671,6 +701,8 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         out,
         "  milestones (unsigned in D-1), artifact bodies the bundle does not carry, and anything before the chain's capture boundary."
     );
-    let _ = writeln!(out, "bundle root: {}", bundle.root.display());
+    if show_path {
+        let _ = writeln!(out, "bundle root: {}", bundle.root.display());
+    }
     out
 }

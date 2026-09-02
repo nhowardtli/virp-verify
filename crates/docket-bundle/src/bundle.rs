@@ -28,7 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureReport};
-use crate::hash::is_hex_digest_64;
+use crate::hash::{is_hex_digest_64, sha256_hex};
 use crate::limits::Limits;
 use crate::minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
 use crate::producer::{grade_producer_signatures, ProducerSignerReport};
@@ -382,6 +382,23 @@ pub struct Bundle {
     /// Carried artifact bodies keyed by claimed `artifact_hash`. `None` for
     /// a hash-only bundle (no `artifacts` key in the manifest).
     pub artifacts: Option<ArtifactStore>,
+    /// SHA-256 of `manifest.json`'s exact bytes. Identifies this bundle in a
+    /// report without naming the producer's filesystem: the manifest commits
+    /// to every session path, every artifact hash and the key file, so two
+    /// bundles with the same manifest digest have the same contents.
+    /// Recomputable by anyone holding the bundle: `sha256sum manifest.json`.
+    pub manifest_sha256: String,
+}
+
+/// The bundle's directory name — what a report names it, in place of the
+/// producer's filesystem path. Resolves `.` and a trailing separator through
+/// the real path, and takes only the final component; it never falls back to
+/// anything containing a parent directory.
+pub fn bundle_display_name(root: &Path) -> String {
+    let from = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    from(root)
+        .or_else(|| std::fs::canonicalize(root).ok().as_deref().and_then(from))
+        .unwrap_or_else(|| "(bundle directory name unavailable)".to_owned())
 }
 
 impl Bundle {
@@ -793,11 +810,16 @@ impl Bundle {
 
     /// Read a bundle directory under caller-chosen resource ceilings.
     pub fn read_dir_with_limits(root: &Path, limits: &Limits) -> Result<Bundle, BundleError> {
-        let manifest: Manifest = read_json(
-            &safe_join(root, "manifest.json")?,
-            limits.manifest_bytes,
-            "manifest.json",
-        )?;
+        // Read the manifest's bytes rather than deserializing straight from
+        // the path: the digest of those exact bytes is how a report names
+        // this bundle without naming the producer's filesystem.
+        let manifest_path = safe_join(root, "manifest.json")?;
+        let manifest_bytes = read_capped(&manifest_path, limits.manifest_bytes, "manifest.json")?;
+        let manifest_sha256 = sha256_hex(&manifest_bytes);
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|source| BundleError::Json {
+            path: manifest_path,
+            source,
+        })?;
         if manifest.docket_bundle_version != BUNDLE_VERSION {
             return Err(BundleError::UnsupportedVersion(manifest.docket_bundle_version));
         }
@@ -978,6 +1000,7 @@ impl Bundle {
             seal_bytes,
             seal_signature,
             artifacts,
+            manifest_sha256,
         })
     }
 

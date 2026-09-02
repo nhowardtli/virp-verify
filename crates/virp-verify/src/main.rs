@@ -566,19 +566,28 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
         b.source_device_established.answer.label(),
         b.source_device_established.detail
     );
-    let cc_extra = b
-        .capture_completeness
-        .grade
-        .extra()
-        .map(|e| format!(" — {e}"))
-        .unwrap_or_default();
-    let _ = writeln!(
-        out,
-        "  {:<28} {:<28} {}{cc_extra}",
-        "capture_completeness",
-        b.capture_completeness.grade.label(),
-        b.capture_completeness.detail
-    );
+    // One line per distinct (grade, reason), not one per session: the
+    // reason rides inside each group line, so the `— extra` suffix used
+    // elsewhere would only repeat the worst group's reason back.
+    let cc = &b.capture_completeness;
+    match cc.groups.split_first() {
+        None => {
+            let extra = cc.grade.extra().map(|e| format!(" — {e}")).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "  {:<28} {:<28} {}{extra}",
+                "capture_completeness",
+                cc.grade.label(),
+                cc.detail
+            );
+        }
+        Some((first, rest)) => {
+            let _ = writeln!(out, "  {:<28} {:<28} {first}", "capture_completeness", cc.grade.label());
+            for g in rest {
+                let _ = writeln!(out, "  {:<28} {:<28} {g}", "", "");
+            }
+        }
+    }
     let _ = writeln!(out);
     let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());
     let _ = writeln!(out);

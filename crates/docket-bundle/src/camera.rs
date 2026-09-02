@@ -106,7 +106,7 @@ impl CaptureGrade {
     /// UNEXPLAINED (matching the producer's coverage axis): a stream that
     /// cannot be graded must not hide behind a sibling's grade. FAILED is
     /// worst.
-    fn rank(&self) -> u8 {
+    pub(crate) fn rank(&self) -> u8 {
         match self {
             CaptureGrade::Continuous => 0,
             CaptureGrade::InterruptedAccounted => 1,

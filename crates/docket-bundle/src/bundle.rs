@@ -62,7 +62,13 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// existing field changed shape or meaning, no verdict or exit code
 /// changed — but a session whose only capture defect was such a boundary
 /// gap now grades INTERRUPTED / ACCOUNTED where 0.4 graded it FAILED.
-pub const REPORT_VERSION: &str = "docket-report/0.5";
+/// `0.6` added `boundary.capture_completeness.groups`: the per-session
+/// grades rolled up to one line per distinct (grade, reason) instead of one
+/// entry per session. Additive only — `detail` still carries the same
+/// information as one string, no existing field changed shape, and no
+/// grade, verdict or exit code changed; only the wording of `detail` and
+/// the two surfaces that render it.
+pub const REPORT_VERSION: &str = "docket-report/0.6";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -1247,7 +1253,81 @@ impl SourceDeviceAnswer {
 pub struct CaptureSummary {
     #[serde(flatten)]
     pub grade: CaptureGrade,
+    /// The grouped lines joined with `"; "`, for a consumer that wants one
+    /// string. Identical information to [`Self::groups`].
     pub detail: String,
+    /// One line per distinct (grade, reason) across the sessions, worst
+    /// first. Sixty-eight sessions that are UNVERIFIABLE for the same reason
+    /// are one line with a count, not sixty-eight names: an enumeration that
+    /// says the same thing sixty-eight times buries the one line that says
+    /// something. A group of five or fewer names its sessions, because at
+    /// that size the names are the useful part.
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+/// Collapse per-session capture grades into one line per distinct
+/// (label, reason). Purely a presentation roll-up: no grade is computed,
+/// changed or ranked here beyond the ordering of the lines.
+fn capture_groups(sessions: &[SessionOutcome]) -> Vec<String> {
+    capture_group_lines(
+        sessions
+            .iter()
+            .map(|s| (s.report.session_id.as_str(), &s.capture_completeness.grade)),
+    )
+}
+
+/// The grouping itself, over `(session_id, grade)` pairs so it can be
+/// exercised without building a bundle.
+fn capture_group_lines<'a>(rows: impl IntoIterator<Item = (&'a str, &'a CaptureGrade)>) -> Vec<String> {
+    /// A group is at most this many sessions before the names give way to a
+    /// bare count.
+    const NAME_LIMIT: usize = 5;
+
+    // (label, reason) -> session ids, in first-seen order within each group.
+    let mut keys: Vec<(&'static str, Option<String>, u8)> = Vec::new();
+    let mut members: Vec<Vec<&str>> = Vec::new();
+    let mut total = 0usize;
+    for (session_id, g) in rows {
+        total += 1;
+        let key = (g.label(), g.extra().map(str::to_owned), g.rank());
+        match keys.iter().position(|k| k.0 == key.0 && k.1 == key.1) {
+            Some(i) => members[i].push(session_id),
+            None => {
+                keys.push(key);
+                members.push(vec![session_id]);
+            }
+        }
+    }
+    // Worst first, so a reader who stops after one line has read the worst
+    // one. Ties broken on the label then the reason, so the order is a
+    // function of the evidence and not of manifest order.
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by(|&a, &b| {
+        keys[b]
+            .2
+            .cmp(&keys[a].2)
+            .then_with(|| keys[a].0.cmp(keys[b].0))
+            .then_with(|| keys[a].1.cmp(&keys[b].1))
+    });
+
+    order
+        .into_iter()
+        .map(|i| {
+            let (label, reason, _) = &keys[i];
+            let ids = &members[i];
+            let names = if ids.len() <= NAME_LIMIT {
+                format!(" ({})", ids.join(", "))
+            } else {
+                String::new()
+            };
+            let n = ids.len();
+            match reason {
+                Some(r) => format!("{label} for {n} of {total} sessions{names}: {r}"),
+                None => format!("{label} for {n} of {total} sessions{names}"),
+            }
+        })
+        .collect()
 }
 
 fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryReport {
@@ -1285,11 +1365,7 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         .unwrap_or(CaptureGrade::Unverifiable {
             reason: "the bundle contains no sessions".to_owned(),
         });
-    let per_session = sessions
-        .iter()
-        .map(|s| format!("{}: {}", s.report.session_id, s.capture_completeness.grade.label()))
-        .collect::<Vec<_>>()
-        .join("; ");
+    let groups = capture_groups(sessions);
     BoundaryReport {
         source_device_established: SourceDeviceReport {
             answer: SourceDeviceAnswer::No,
@@ -1297,7 +1373,8 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         },
         capture_completeness: CaptureSummary {
             grade: worst,
-            detail: per_session,
+            detail: groups.join("; "),
+            groups,
         },
     }
 }
@@ -1401,4 +1478,96 @@ fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> V
         .map(|s| s.report.verdict)
         .min_by_key(|v| rank(*v))
         .unwrap_or(Verdict::Failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capture_group_lines;
+    use crate::camera::CaptureGrade;
+
+    fn unverifiable(reason: &str) -> CaptureGrade {
+        CaptureGrade::Unverifiable {
+            reason: reason.to_owned(),
+        }
+    }
+
+    /// The roll-up the Sep 1 full-chain bundle needed: sixty-eight sessions
+    /// that are UNVERIFIABLE for one reason are one line, not sixty-eight.
+    #[test]
+    fn one_reason_across_every_session_is_one_line_with_a_count() {
+        let g = unverifiable("the bundle carries no artifact bodies");
+        let rows: Vec<(String, CaptureGrade)> = (0..68).map(|i| (format!("s{i}"), g.clone())).collect();
+        let lines = capture_group_lines(rows.iter().map(|(id, g)| (id.as_str(), g)));
+        assert_eq!(
+            lines,
+            vec!["UNVERIFIABLE for 68 of 68 sessions: the bundle carries no artifact bodies".to_owned()]
+        );
+    }
+
+    /// Three sessions sharing one reason and one session with another render
+    /// two lines. The group of three is small enough to name its sessions;
+    /// both counts are stated against the same total.
+    #[test]
+    fn distinct_reasons_render_one_line_each_with_counts() {
+        let a = unverifiable("no artifact bodies carried");
+        let b = unverifiable("no camera_segment records among the carried bodies");
+        let rows = [
+            ("alpha".to_owned(), a.clone()),
+            ("bravo".to_owned(), a.clone()),
+            ("charlie".to_owned(), b.clone()),
+            ("delta".to_owned(), a.clone()),
+        ];
+        let lines = capture_group_lines(rows.iter().map(|(id, g)| (id.as_str(), g)));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "UNVERIFIABLE for 3 of 4 sessions (alpha, bravo, delta): no artifact bodies carried"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                == "UNVERIFIABLE for 1 of 4 sessions (charlie): no camera_segment records among the carried bodies"),
+            "{lines:?}"
+        );
+    }
+
+    /// Over the naming limit the names give way to a bare count; at or under
+    /// it they stay, because at that size the names are the useful part.
+    #[test]
+    fn groups_name_their_sessions_only_up_to_five() {
+        let g = CaptureGrade::Continuous;
+        let five: Vec<(String, CaptureGrade)> = (0..5).map(|i| (format!("s{i}"), g.clone())).collect();
+        let lines = capture_group_lines(five.iter().map(|(id, g)| (id.as_str(), g)));
+        assert_eq!(
+            lines,
+            vec!["CONTINUOUS for 5 of 5 sessions (s0, s1, s2, s3, s4)".to_owned()]
+        );
+
+        let six: Vec<(String, CaptureGrade)> = (0..6).map(|i| (format!("s{i}"), g.clone())).collect();
+        let lines = capture_group_lines(six.iter().map(|(id, g)| (id.as_str(), g)));
+        assert_eq!(lines, vec!["CONTINUOUS for 6 of 6 sessions".to_owned()]);
+    }
+
+    /// Worst first: a reader who stops after one line has read the worst
+    /// group, matching the weakest-link discipline everywhere else.
+    #[test]
+    fn groups_are_ordered_worst_first() {
+        let rows = [
+            ("a".to_owned(), CaptureGrade::Continuous),
+            ("b".to_owned(), unverifiable("nothing to grade")),
+            ("c".to_owned(), CaptureGrade::InterruptedAccounted),
+        ];
+        let lines = capture_group_lines(rows.iter().map(|(id, g)| (id.as_str(), g)));
+        let labels: Vec<&str> = lines.iter().map(|l| l.split(" for ").next().unwrap()).collect();
+        assert_eq!(labels, vec!["UNVERIFIABLE", "INTERRUPTED / ACCOUNTED", "CONTINUOUS"]);
+    }
+
+    /// No sessions: no group lines, so the renderers fall back to the
+    /// grade's own reason instead of printing an empty cell.
+    #[test]
+    fn no_sessions_produces_no_group_lines() {
+        let rows: Vec<(String, CaptureGrade)> = Vec::new();
+        assert!(capture_group_lines(rows.iter().map(|(id, g)| (id.as_str(), g))).is_empty());
+    }
 }

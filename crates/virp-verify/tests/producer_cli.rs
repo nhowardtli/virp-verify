@@ -129,7 +129,7 @@ fn json_reports_all_three_producer_results_distinctly() {
         args.push(&dir_s);
         let (_, out) = run(&args);
         let v: Value = serde_json::from_str(&out).expect("json report");
-        assert_eq!(v["docket_report_version"], "docket-report/0.5", "{label}");
+        assert_eq!(v["docket_report_version"], "docket-report/0.6", "{label}");
         let p = &v["sessions"][0]["producer"];
         assert_eq!(p["signature_validity"]["status"], want_validity, "{label}: {p}");
         assert_eq!(p["trust"], want_trust, "{label}: {p}");

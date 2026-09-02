@@ -21,8 +21,8 @@ pub mod sig;
 pub mod verify;
 
 pub use bundle::{
-    read_key_file, BoundaryReport, Bundle, BundleError, BundleReport, CaptureSummary, SourceDeviceAnswer,
-    SourceDeviceReport, REPORT_VERSION,
+    read_key_file, validate_session_input, BoundaryReport, Bundle, BundleError, BundleReport, CaptureSummary,
+    SourceDeviceAnswer, SourceDeviceReport, REPORT_VERSION,
 };
 pub use camera::{
     claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureOutage, CaptureOverlap, CapturePolicy,

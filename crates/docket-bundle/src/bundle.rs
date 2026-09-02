@@ -493,6 +493,30 @@ pub fn unencodable_byte(s: &str) -> Option<(usize, u8)> {
 
 /// Check the string fields that go into an entry's canonical bytes, before
 /// those bytes are built: length ceilings and encodability, in one pass.
+/// Read-time validation of one session's input, whatever produced it.
+///
+/// A bundle from a stranger and a live chain database are the same kind of
+/// input: bytes this process did not write. The bundle reader has always run
+/// these checks; `docket view --db` built a `SessionChain` straight from
+/// SQLite rows and ran none of them, so a hostile string field in a live
+/// database reached the canonical builder by a path the bundle reader
+/// closes. Both callers now go through here.
+///
+/// What it enforces: the per-session entry ceiling, the per-field length
+/// ceilings, and the canonical-encodability guard (no quote, backslash or
+/// control byte in a field that enters the canonical bytes). What it does
+/// NOT do is grade anything — every property is still decided later, by
+/// verify, and a session that passes here can still fail every check there.
+pub fn validate_session_input(chain: &SessionChain, limits: &Limits) -> Result<(), BundleError> {
+    if chain.entries.len() > limits.entries_per_session {
+        return Err(BundleError::TooMany {
+            what: "entries in one session",
+            max: limits.entries_per_session,
+        });
+    }
+    check_entry_field_lengths(chain, limits)
+}
+
 fn check_entry_field_lengths(chain: &SessionChain, limits: &Limits) -> Result<(), BundleError> {
     let too_long = |sequence: i64, field: &'static str, len: usize, max: usize| BundleError::FieldTooLong {
         session_id: chain.session_id.clone(),
@@ -665,12 +689,7 @@ impl Bundle {
                     file: chain.session_id,
                 });
             }
-            if chain.entries.len() > limits.entries_per_session {
-                return Err(BundleError::TooMany {
-                    what: "entries in one session",
-                    max: limits.entries_per_session,
-                });
-            }
+            validate_session_input(&chain, limits)?;
             entries_total = entries_total.saturating_add(chain.entries.len());
             if entries_total > limits.entries_total {
                 return Err(BundleError::TooMany {
@@ -678,7 +697,6 @@ impl Bundle {
                     max: limits.entries_total,
                 });
             }
-            check_entry_field_lengths(&chain, limits)?;
             // Third axis: identity as the FILE states it. Redundant with the
             // manifest check only while the manifest/file agreement check
             // above holds; asserted separately so that neither check silently

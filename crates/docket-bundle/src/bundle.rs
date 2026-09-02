@@ -376,6 +376,83 @@ impl Bundle {
             .find(|w| w.artifact_hash == artifact_hash)
             .map(|w| w.bytes)
     }
+
+    /// Audit the manifest's `redaction` block against the bundle itself.
+    ///
+    /// The block is metadata: it sits outside every canonical byte, nothing
+    /// hashes it and nothing signs it, so an intermediary can add, remove or
+    /// falsify it freely. Its **count** therefore has to be recomputed rather
+    /// than read, and its **policy name** can only ever be repeated as a
+    /// claim — there is nothing in a bundle that could establish which
+    /// patterns actually ran.
+    ///
+    /// The ground truth is the bundle: an entry is withheld only if the
+    /// manifest names its `artifact_hash` AND the bundle really carries no
+    /// body for it. A hash the manifest names but the bundle carries anyway
+    /// is a contradiction; a hash no entry references is a claim about
+    /// nothing. Both are counted separately and neither inflates the total.
+    ///
+    /// Display only. No property reads this and no verdict can move on it.
+    pub fn audit_redaction(&self) -> Option<RedactionAudit> {
+        let r = self.manifest.redaction.as_ref()?;
+        let referenced: BTreeSet<&str> = self
+            .sessions
+            .iter()
+            .flat_map(|s| s.entries.iter())
+            .map(|e| e.fields.artifact_hash.as_str())
+            .collect();
+        let carried = |h: &str| self.artifacts.as_ref().is_some_and(|a| a.contains_key(h));
+
+        let mut recomputed = 0usize;
+        let mut carried_anyway = Vec::new();
+        let mut not_in_chain = Vec::new();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for w in &r.withheld {
+            if !seen.insert(w.artifact_hash.as_str()) {
+                continue; // a duplicate claim is one claim
+            }
+            if !referenced.contains(w.artifact_hash.as_str()) {
+                not_in_chain.push(w.artifact_hash.clone());
+            } else if carried(&w.artifact_hash) {
+                carried_anyway.push(w.artifact_hash.clone());
+            } else {
+                recomputed += 1;
+            }
+        }
+        Some(RedactionAudit {
+            policy_claimed: r.policy.clone(),
+            declared: r.entries_withheld,
+            recomputed,
+            carried_anyway,
+            not_in_chain,
+        })
+    }
+}
+
+/// What the manifest's `redaction` block claims, next to what the bundle
+/// actually shows. See [`Bundle::audit_redaction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactionAudit {
+    /// The policy name the manifest claims ran. A CLAIM — repeated, never
+    /// verified. Nothing in a bundle could establish which patterns ran.
+    pub policy_claimed: String,
+    /// `entries_withheld` as the manifest declares it.
+    pub declared: usize,
+    /// How many withheld entries the BUNDLE supports: named by the manifest,
+    /// referenced by a chain entry, and genuinely carrying no body.
+    pub recomputed: usize,
+    /// Named as withheld, but the bundle carries a body for it anyway.
+    pub carried_anyway: Vec<String>,
+    /// Named as withheld, but no chain entry in this bundle references it.
+    pub not_in_chain: Vec<String>,
+}
+
+impl RedactionAudit {
+    /// True when the declared count matches what the bundle shows and no
+    /// claim contradicts the evidence.
+    pub fn consistent(&self) -> bool {
+        self.declared == self.recomputed && self.carried_anyway.is_empty() && self.not_in_chain.is_empty()
+    }
 }
 
 /// Resolve a manifest-relative path inside the bundle root.

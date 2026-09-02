@@ -322,19 +322,54 @@ fn render_text(path: &std::path::Path, bundle: &Bundle, report: &BundleReport, s
     );
     // A redacted export withholds bodies it would otherwise carry. Say so
     // once, at the top: an examiner must not read "hash-only" as "the daemon
-    // never had this". Nothing about the verdict changes — a withheld body
-    // grades exactly as an absent one, which is why this is a line of
-    // context and not a property.
-    if let Some(r) = &bundle.manifest.redaction {
+    // never had this".
+    //
+    // The manifest's redaction block is metadata — outside every canonical
+    // byte, hashed by nothing, signed by nothing. So the COUNT is recomputed
+    // from the bundle's own hash-only entries rather than read, and the
+    // POLICY NAME is repeated as a claim and never verified: nothing in a
+    // bundle could establish which patterns actually ran. Neither number
+    // touches a verdict — a withheld body grades exactly as an absent one,
+    // which is why this is context and not a property.
+    if let Some(a) = bundle.audit_redaction() {
         let _ = writeln!(
             out,
-            "redacted: this export withheld {} artifact bod{} under policy {} — those entries are \
-             hash-only HERE by choice, not because no body existed. Every artifact_hash still commits \
-             to the original bytes and no verdict below is affected.",
-            r.withheld.len(),
-            if r.withheld.len() == 1 { "y" } else { "ies" },
-            r.policy
+            "redaction: {} (declared, unsigned), {} withheld (recomputed)",
+            a.policy_claimed, a.recomputed
         );
+        let _ = writeln!(
+            out,
+            "           those entries are hash-only HERE by choice, not because no body existed. Every \
+             artifact_hash still commits to the original bytes and no verdict below is affected. The \
+             policy name above is a CLAIM repeated from the manifest — nothing in a bundle can prove \
+             which patterns ran."
+        );
+        if a.declared != a.recomputed {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: the manifest declares {} withheld; the bundle supports {}. The \
+                 recomputed number is the one to trust — the manifest block is unsigned.",
+                a.declared, a.recomputed
+            );
+        }
+        if !a.carried_anyway.is_empty() {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: {} artifact_hash(es) are named as withheld but their bodies ARE \
+                 carried in this bundle: {}",
+                a.carried_anyway.len(),
+                a.carried_anyway.join(", ")
+            );
+        }
+        if !a.not_in_chain.is_empty() {
+            let _ = writeln!(
+                out,
+                "           INCONSISTENT: {} artifact_hash(es) are named as withheld but no entry in this \
+                 bundle references them: {}",
+                a.not_in_chain.len(),
+                a.not_in_chain.join(", ")
+            );
+        }
     }
     if report.key_ids.is_empty() {
         let _ = writeln!(

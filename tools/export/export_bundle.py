@@ -79,6 +79,9 @@ artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
                 exported AS STORED for the verifier to fail — fixing it
                 here would be judging.
 keys.json       produced ONLY with --keys, from PUBLIC key files the operator
+                supplies in either form virp-verify --pin also reads: 64 hex
+                characters (the raw public key), or a docket keys.json
+                object. The key_id is derived from the bytes either way.
                 supplies (the chain schema has no table of public keys; the
                 D-1 public half lives as a file on the daemon host, so there
                 is nothing in a database to export). Without --keys nothing
@@ -551,16 +554,30 @@ def derive_key_id(public_key_hex):
     return hashlib.sha256(bytes.fromhex(public_key_hex)).hexdigest()[:KEY_ID_HEX_LEN]
 
 
-def read_public_key_file(path):
-    """One chain-signing PUBLIC key file -> a normalized keys.json entry.
+# The two forms `virp-verify --pin` accepts, named in every rejection so an
+# operator holding the wrong shape is told what the right ones are.
+KEY_FILE_FORMS = (
+    f"A key file is either {PUBLIC_KEY_HEX_LEN} hex characters — the raw Ed25519 PUBLIC key as it lives "
+    'on the daemon host, trailing newline allowed — or a docket keys.json object '
+    '{"keys": [{"key_id", "algorithm", "public_key_hex"}]}. Raw 32-byte binary is not accepted by '
+    "either side of Docket: hex it first (xxd -p -c 64)"
+)
 
-    Two accepted forms:
+
+def read_public_key_file(path):
+    """One chain-signing PUBLIC key file -> normalized keys.json entries.
+
+    Accepted forms, the same set `virp-verify --pin` reads, so one file works
+    on both sides of the tool:
       * raw hex: the file is exactly 64 hex characters (plus whitespace) —
         the D-1 public half as it lives on the daemon host;
-      * JSON object: {"public_key_hex": "64 hex"} with optional "algorithm"
-        (any casing of ed25519 — the API serves "Ed25519", the bundle format
-        wants lowercase), optional stated "key_id"/"key_id_hex" (checked
-        against the derived id, never trusted), optional "comment".
+      * a docket keys.json object: {"keys": [ <key object>, ... ]};
+      * a bare key object: {"public_key_hex": "64 hex"} with optional
+        "algorithm" (any casing of ed25519 — the API serves "Ed25519", the
+        bundle format wants lowercase), optional stated "key_id"/"key_id_hex"
+        (checked against the derived id, never trusted), optional "comment".
+        This is the exporter's original single-key form; it is kept because
+        operators have files in it.
 
     Normalization on write: algorithm lowercase "ed25519", hex lowercase,
     key_id always derived. Whether the bytes are a valid curve point is the
@@ -574,21 +591,41 @@ def read_public_key_file(path):
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise ExportError(f"key file {path} is not UTF-8 text (raw hex or JSON expected): {e}") from e
+        raise ExportError(f"key file {path} is not UTF-8 text. {KEY_FILE_FORMS}: {e}") from e
 
     stripped = text.strip()
     if HEX_RE.match(stripped) and len(stripped) == PUBLIC_KEY_HEX_LEN:
-        doc = {"public_key_hex": stripped}
+        docs = [{"public_key_hex": stripped}]
     else:
         try:
             doc = json.loads(stripped)
         except ValueError as e:
             raise ExportError(
-                f"key file {path} is neither {PUBLIC_KEY_HEX_LEN} hex characters nor valid JSON: {e}"
+                f"key file {path} is neither {PUBLIC_KEY_HEX_LEN} hex characters nor valid JSON. "
+                f"{KEY_FILE_FORMS}: {e}"
             ) from e
         if not isinstance(doc, dict):
-            raise ExportError(f"key file {path}: JSON form must be an object, found {type(doc).__name__}")
+            raise ExportError(
+                f"key file {path}: JSON form must be an object, found {type(doc).__name__}. {KEY_FILE_FORMS}"
+            )
+        if "keys" in doc:
+            # The keys.json shape, exactly as this exporter emits it and as
+            # --pin reads it: a round trip through the bundle format works.
+            if not isinstance(doc["keys"], list):
+                raise ExportError(f"key file {path}: 'keys' must be a list, found {type(doc['keys']).__name__}")
+            if not doc["keys"]:
+                raise ExportError(f"key file {path}: 'keys' is empty; a key file must carry at least one key")
+            for k in doc["keys"]:
+                if not isinstance(k, dict):
+                    raise ExportError(f"key file {path}: every entry in 'keys' must be an object")
+            docs = doc["keys"]
+        else:
+            docs = [doc]
+    return [read_public_key_doc(path, d) for d in docs]
 
+
+def read_public_key_doc(path, doc):
+    """One key object -> a normalized keys.json entry."""
     for name in doc:
         if any(w in name.lower() for w in SECRET_FIELD_WORDS):
             raise ExportError(
@@ -635,17 +672,17 @@ def read_public_keys(paths):
     by_id = {}
     origin = {}
     for path in paths:
-        entry = read_public_key_file(path)
-        kid = entry["key_id"]
-        if kid in by_id:
-            if by_id[kid] != entry:
-                raise ExportError(
-                    f"key files {origin[kid]} and {path} supply key_id {kid} with different metadata; "
-                    f"refusing to choose"
-                )
-            continue
-        by_id[kid] = entry
-        origin[kid] = path
+        for entry in read_public_key_file(path):
+            kid = entry["key_id"]
+            if kid in by_id:
+                if by_id[kid] != entry:
+                    raise ExportError(
+                        f"key files {origin[kid]} and {path} supply key_id {kid} with different metadata; "
+                        f"refusing to choose"
+                    )
+                continue
+            by_id[kid] = entry
+            origin[kid] = path
     return [by_id[kid] for kid in sorted(by_id)]
 
 

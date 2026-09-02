@@ -812,6 +812,88 @@ class KeysExport(unittest.TestCase):
         self.assertIn("PUBLIC key files only", r.stderr)
         self.assertFalse(os.path.exists(self.out("leak")))
 
+    # ---- one key format on both sides of Docket -----------------------------
+    #
+    # `virp-verify --pin` used to take only a keys.json and answered "invalid
+    # JSON" for the bare-hex public half the exporter's --keys already read.
+    # Both sides now read both forms; these tests hold the exporter half.
+
+    def test_keys_json_shape_and_bare_hex_produce_the_same_keys_json(self):
+        # The same key, in the two accepted forms, under a pinned clock:
+        # byte-identical output, so a round trip through the bundle format is
+        # a no-op and neither form is the "real" one.
+        env = {"SOURCE_DATE_EPOCH": "0"}
+        hex_file = self.key_file("chain.hex", self.pub + "\n")
+        json_file = self.key_file(
+            "keys.json",
+            {"keys": [{"key_id": self.key_id, "algorithm": "ed25519", "public_key_hex": self.pub}]},
+        )
+        outs = {}
+        for label, path in (("from-hex", hex_file), ("from-json", json_file)):
+            out = self.out(label)
+            r = run_export(
+                "--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--keys", path, env=env
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            with open(os.path.join(out, "keys.json"), "rb") as f:
+                outs[label] = f.read()
+        self.assertEqual(outs["from-hex"], outs["from-json"])
+        entry = json.loads(outs["from-hex"])["keys"][0]
+        self.assertEqual(entry["key_id"], self.key_id)
+        self.assertEqual(entry["public_key_hex"], self.pub)
+
+    def test_a_keys_json_carrying_several_keys_exports_all_of_them(self):
+        multi = self.key_file(
+            "multi.json",
+            {
+                "keys": [
+                    {"public_key_hex": self.pub},
+                    {"public_key_hex": self.SECOND_PUB},
+                ]
+            },
+        )
+        out = self.out("multi")
+        r = run_export("--db", self.db, "--out", out, "--sessions", SYNTHETIC_SESSION, "--keys", multi)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "keys.json")) as f:
+            ids = [k["key_id"] for k in json.load(f)["keys"]]
+        self.assertEqual(len(ids), 2)
+        self.assertIn(self.key_id, ids)
+
+    def test_a_key_id_inside_a_keys_json_is_still_never_taken_on_faith(self):
+        lying = self.key_file(
+            "lying.json",
+            {"keys": [{"key_id": "00" * 16, "algorithm": "ed25519", "public_key_hex": self.pub}]},
+        )
+        r = run_export("--db", self.db, "--out", self.out("lying"), "--sessions", SYNTHETIC_SESSION, "--keys", lying)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("does not re-derive", r.stderr)
+        self.assertFalse(os.path.exists(self.out("lying")))
+
+    def test_secret_material_inside_a_keys_json_entry_is_still_refused(self):
+        leak = self.key_file("wrapped-leak.json", {"keys": [self.cs["test_key"]]})
+        r = run_export("--db", self.db, "--out", self.out("wrapped"), "--sessions", SYNTHETIC_SESSION, "--keys", leak)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("PUBLIC key files only", r.stderr)
+        self.assertFalse(os.path.exists(self.out("wrapped")))
+
+    def test_raw_binary_key_is_refused_and_the_message_names_both_forms(self):
+        path = os.path.join(self.tmp, "raw.bin")
+        with open(path, "wb") as f:
+            f.write(bytes.fromhex(self.pub))
+        r = run_export("--db", self.db, "--out", self.out("raw"), "--sessions", SYNTHETIC_SESSION, "--keys", path)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("64 hex characters", r.stderr)
+        self.assertIn("keys.json", r.stderr)
+        self.assertIn("Raw 32-byte binary is not accepted", r.stderr)
+        self.assertFalse(os.path.exists(self.out("raw")))
+
+    def test_an_empty_keys_list_is_refused(self):
+        empty = self.key_file("empty.json", {"keys": []})
+        r = run_export("--db", self.db, "--out", self.out("empty"), "--sessions", SYNTHETIC_SESSION, "--keys", empty)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("at least one key", r.stderr)
+
     # ---- without --keys, nothing changes ------------------------------------
 
     def test_without_keys_flag_no_keys_json_and_no_manifest_pointer(self):

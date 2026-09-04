@@ -81,8 +81,10 @@ artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
 artifacts/<sha256>  (--referenced-artifacts only; it needs --artifacts) the
                 REFERENCED artifacts as well — the files a camera record
                 cites by digest but which have never travelled in a bundle:
-                the segment video (segment_sha256) and the validator's own
-                output about it (sensor_signature.validator_output_sha256).
+                the segment video (segment_sha256), the validator's own
+                output about it (sensor_signature.validator_output_sha256),
+                and from /6 the device leaf certificate in DER
+                (sensor_signature.device_chain.leaf_sha256).
                 Listed in the manifest as referenced_artifacts[{sha256,
                 cited_by, path, present}], separately from `artifacts`,
                 because those are the record and these are the bytes the
@@ -475,6 +477,7 @@ def fetch_artifact_bodies(conn, chains):
 # reports up.
 CITED_SEGMENT = "segment_sha256"
 CITED_VALIDATOR_OUTPUT = "sensor_signature.validator_output_sha256"
+CITED_LEAF = "sensor_signature.device_chain.leaf_sha256"
 
 HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 
@@ -502,6 +505,11 @@ def cited_digests(body):
         vo = sensor.get("validator_output_sha256")
         if isinstance(vo, str) and HEX64.match(vo):
             out[CITED_VALIDATOR_OUTPUT] = vo
+        chain = sensor.get("device_chain")
+        if isinstance(chain, dict):
+            leaf = chain.get("leaf_sha256")
+            if isinstance(leaf, str) and HEX64.match(leaf):
+                out[CITED_LEAF] = leaf
     return out
 
 
@@ -510,8 +518,10 @@ def referenced_patterns(field, seg_sha, digest):
     two layouts `virp_camera.py audit --artifact-dir` looks in, so a file the
     producer's own auditor can check is a file this can carry:
 
-      outbox             <camera>.<seq>.<segment_sha256>.mp4
+      outbox / spool     <camera>.<seq>.<segment_sha256>.mp4
                          <camera>.<seq>.<segment_sha256>.validation.txt
+                         <camera>.<seq>.<segment_sha256>.leaf.der
+      replay artifacts/  <segment_sha256>.<ext>
       content-addressed  <digest>.<ext>
 
     Both outbox names key on the SEGMENT digest — that is how the driver
@@ -520,7 +530,14 @@ def referenced_patterns(field, seg_sha, digest):
     also what lets an ALTERED validator output still be found and carried."""
     if field == CITED_SEGMENT:
         return (f"*.{seg_sha}.mp4", f"{seg_sha}.mp4")
-    return (f"*.{seg_sha}.validation.txt", f"*.{seg_sha}.validation_results.txt", f"{digest}.txt")
+    if field == CITED_LEAF:
+        return (f"*.{seg_sha}.leaf.der", f"{seg_sha}.leaf.der", f"{digest}.der")
+    return (
+        f"*.{seg_sha}.validation.txt",
+        f"{seg_sha}.validation.txt",
+        f"*.{seg_sha}.validation_results.txt",
+        f"{digest}.txt",
+    )
 
 
 def find_referenced(dirs, field, seg_sha, digest):

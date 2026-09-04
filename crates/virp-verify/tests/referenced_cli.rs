@@ -286,9 +286,17 @@ fn the_epilogue_states_the_new_reach_and_its_remaining_limits() {
         out.contains("re-derived from the signed bodies, never read from the unsigned manifest"),
         "{out}"
     );
+    // The leaf came OFF the not-recomputed list when it started travelling;
+    // the other two stay on it, and the epilogue now says why each one does.
+    assert!(out.contains("sensor_signature.device_chain.leaf_sha256"), "{out}");
     assert!(
-        out.contains("Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256, and device_chain.anchor_sha256."),
+        out.contains("Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256"),
         "{out}"
+    );
+    assert!(out.contains("device_chain.anchor_sha256"), "{out}");
+    assert!(
+        !out.contains("Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256, and device_chain.anchor_sha256."),
+        "the leaf must no longer be implied absent from the recomputed set: {out}"
     );
     // The old claim is gone, and what replaced it does not overstate: no
     // frame is decoded either way.

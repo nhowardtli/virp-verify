@@ -27,7 +27,7 @@ pub use bundle::{
 };
 pub use camera::{
     cited_digests, claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage,
-    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_SEGMENT,
+    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_LEAF, CITED_SEGMENT,
     CITED_VALIDATOR_OUTPUT, SENSOR_CAPTION,
 };
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};

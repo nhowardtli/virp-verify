@@ -1062,6 +1062,14 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
 pub const CITED_SEGMENT: &str = "segment_sha256";
 /// The field path of the validator-output citation.
 pub const CITED_VALIDATOR_OUTPUT: &str = "sensor_signature.validator_output_sha256";
+/// The field path of the device leaf certificate citation (`/6` and later).
+///
+/// `/6` added this digest and nothing carried the certificate it is over,
+/// which put it in exactly the position `validator_output_sha256` occupied
+/// before the tamper pass: a commitment whose preimage could not be
+/// obtained. The producer now writes the DER and ships it; this is the
+/// verifier learning to ask for it.
+pub const CITED_LEAF: &str = "sensor_signature.device_chain.leaf_sha256";
 
 /// Every artifact this camera record cites BY DIGEST, as (field path,
 /// digest), in a stable order.
@@ -1091,14 +1099,23 @@ pub fn cited_digests(body: &Value) -> Vec<(String, String)> {
             out.push((CITED_SEGMENT.to_owned(), seg.to_owned()));
         }
     }
-    if let Some(vo) = body
-        .get("sensor_signature")
-        .and_then(Value::as_object)
+    let sensor = body.get("sensor_signature").and_then(Value::as_object);
+    if let Some(vo) = sensor
         .and_then(|s| s.get("validator_output_sha256"))
         .and_then(Value::as_str)
     {
         if crate::hash::is_hex_digest_64(vo) {
             out.push((CITED_VALIDATOR_OUTPUT.to_owned(), vo.to_owned()));
+        }
+    }
+    if let Some(leaf) = sensor
+        .and_then(|s| s.get("device_chain"))
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("leaf_sha256"))
+        .and_then(Value::as_str)
+    {
+        if crate::hash::is_hex_digest_64(leaf) {
+            out.push((CITED_LEAF.to_owned(), leaf.to_owned()));
         }
     }
     out

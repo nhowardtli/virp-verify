@@ -344,6 +344,56 @@ fn a_device_chain_that_is_not_an_object_is_failed() {
 }
 
 #[test]
+fn a_v6_record_cites_the_leaf_as_well_as_the_segment_and_validator_output() {
+    use docket_bundle::{cited_digests, CITED_LEAF, CITED_SEGMENT, CITED_VALIDATOR_OUTPUT};
+    let b = body(
+        "camera_segment/6",
+        0,
+        0.0,
+        6.0,
+        Some(sensor_v6("VALID", "MATCH", true, true)),
+    );
+    let cited = cited_digests(&b);
+    let fields: Vec<&str> = cited.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(fields.contains(&CITED_SEGMENT), "{fields:?}");
+    assert!(fields.contains(&CITED_VALIDATOR_OUTPUT), "{fields:?}");
+    assert!(fields.contains(&CITED_LEAF), "{fields:?}");
+    assert_eq!(cited.len(), 3);
+}
+
+#[test]
+fn a_v5_record_cites_no_leaf_because_it_has_none() {
+    use docket_bundle::{cited_digests, CITED_LEAF};
+    let b = body(
+        "camera_segment/5",
+        0,
+        0.0,
+        6.0,
+        Some(sensor_v5("VALID", "MATCH", true, true)),
+    );
+    let cited = cited_digests(&b);
+    assert_eq!(cited.len(), 2);
+    assert!(!cited.iter().any(|(f, _)| f == CITED_LEAF));
+}
+
+#[test]
+fn a_null_device_chain_cites_no_leaf() {
+    use docket_bundle::{cited_digests, CITED_LEAF};
+    let sensor = with_chain(sensor_v6("UNSIGNED", "MATCH", true, true), Value::Null);
+    let b = body("camera_segment/6", 0, 0.0, 6.0, Some(sensor));
+    assert!(!cited_digests(&b).iter().any(|(f, _)| f == CITED_LEAF));
+}
+
+#[test]
+fn a_non_hex_leaf_digest_is_not_a_citation() {
+    use docket_bundle::{cited_digests, CITED_LEAF};
+    let mut sensor = sensor_v6("VALID", "MATCH", true, true);
+    sensor["device_chain"]["leaf_sha256"] = json!("../../../etc/passwd");
+    let b = body("camera_segment/6", 0, 0.0, 6.0, Some(sensor));
+    assert!(!cited_digests(&b).iter().any(|(f, _)| f == CITED_LEAF));
+}
+
+#[test]
 fn a_version_that_promises_a_sensor_object_and_omits_it_is_failed() {
     let (chain, store) = chain_with(&[body("camera_segment/4", 0, 0.0, 6.0, None)]);
     match grade_capture_completeness(&chain, Some(&store)).grade {

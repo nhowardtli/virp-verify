@@ -105,6 +105,49 @@ EXIT CODES (deliberately NOT collapsed into pass/fail):
 virp-verify never signs, never holds a private key, and never executes anything.
 ";
 
+/// The producer's sensor claim, rendered DELIBERATELY UNLIKE the property
+/// ladder above it: indented under a `claims:` marker, lower-case keys, no
+/// VERIFIED/FAILED vocabulary, and a caption on every rendering. A reader
+/// skimming for Docket's verdict must not be able to mistake this block for
+/// one — Docket ran no validator and holds no camera key.
+fn render_sensor_summary(out: &mut String, sensor: &docket_bundle::SensorSummary) {
+    use std::fmt::Write as _;
+    if sensor.is_empty() {
+        return;
+    }
+    let counts = |v: &[(String, usize)]| v.iter().map(|(k, n)| format!("{k}={n}")).collect::<Vec<_>>().join(" ");
+    let _ = writeln!(
+        out,
+        "  claims: sensor_signature ({} record(s)) — {}",
+        sensor.records,
+        docket_bundle::SENSOR_CAPTION
+    );
+    let _ = writeln!(
+        out,
+        "      vendor={}  serial={}",
+        if sensor.vendors.is_empty() {
+            "—".to_owned()
+        } else {
+            sensor.vendors.join(",")
+        },
+        if sensor.device_serials.is_empty() {
+            "—".to_owned()
+        } else {
+            sensor.device_serials.join(",")
+        }
+    );
+    let _ = writeln!(out, "      producer verdicts: {}", counts(&sensor.verdicts));
+    if !sensor.unverified_reasons.is_empty() {
+        let _ = writeln!(out, "      unverified because: {}", counts(&sensor.unverified_reasons));
+    }
+    if !sensor.pin_states.is_empty() {
+        let _ = writeln!(out, "      leaf key pin:      {}", counts(&sensor.pin_states));
+    }
+    if !sensor.chain_states.is_empty() {
+        let _ = writeln!(out, "      device chain:      {}", counts(&sensor.chain_states));
+    }
+}
+
 fn main() -> ExitCode {
     let mut json = false;
     let mut path: Option<PathBuf> = None;
@@ -527,6 +570,7 @@ fn render_text(
             cc.grade.label(),
             cc.detail
         );
+        render_sensor_summary(&mut out, &s.sensor);
         for g in &cc.external_predecessor_gaps {
             let _ = writeln!(
                 out,

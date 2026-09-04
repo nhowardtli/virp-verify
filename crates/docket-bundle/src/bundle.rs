@@ -27,7 +27,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{claimed_camera_ids, grade_capture_completeness, CaptureGrade, CaptureReport};
+use crate::camera::{
+    claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureReport, SensorSummary,
+};
 use crate::hash::{is_hex_digest_64, sha256_hex};
 use crate::limits::Limits;
 use crate::minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
@@ -1058,6 +1060,7 @@ impl Bundle {
                 }
             };
             let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
+            let sensor = summarise_sensor(chain, self.artifacts.as_ref());
             let producer = grade_producer_signatures(chain, self.artifacts.as_ref(), producer_keys);
             sessions.push(SessionOutcome {
                 report,
@@ -1066,6 +1069,7 @@ impl Bundle {
                 artifact_coverage,
                 producer,
                 capture_completeness,
+                sensor,
             });
         }
 
@@ -1203,6 +1207,15 @@ pub struct SessionOutcome {
     /// session whose evidence cannot carry the answer says UNVERIFIABLE and
     /// why.
     pub capture_completeness: CaptureReport,
+    /// What the producer RECORDED about the sensor's own signature, rolled
+    /// up for display. PRESENTATION ONLY: it is not a
+    /// [`crate::verify::Status`], it is not in `properties`, and it never
+    /// reaches [`overall_verdict`]. Docket ran no validator and holds no
+    /// camera key; it is repeating a claim carried inside bytes whose
+    /// signature it did verify. Omitted from JSON when the session carries
+    /// no sensor-bearing record, so pre-/3 bundles serialize unchanged.
+    #[serde(default, skip_serializing_if = "SensorSummary::is_empty")]
+    pub sensor: SensorSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

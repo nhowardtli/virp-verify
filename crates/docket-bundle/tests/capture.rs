@@ -189,15 +189,36 @@ fn a_single_v1_record_among_v2_makes_the_session_unverifiable() {
 
 #[test]
 fn unrecognised_camera_segment_schema_is_refused_by_name() {
+    // /3, /4 and /5 became KNOWN versions (see tests/sensor_versions.rs), so
+    // this test's example moved to a version nothing defines. The rule it
+    // pins is unchanged: an unknown camera_segment/N is refused by name and
+    // never guessed around.
+    let b = body_v2("cam", 0, 0.0, 6.0, Value::Null, policy(6.0, 2.0, 0.0));
+    let mut b9 = b;
+    b9["schema"] = json!("camera_segment/9");
+    let (chain, store) = chain_with_bodies(&bodies(&[b9]));
+    let r = grade_capture_completeness(&chain, Some(&store));
+    let CaptureGrade::Unverifiable { reason } = &r.grade else {
+        panic!("want UNVERIFIABLE, got {:?}", r.grade);
+    };
+    assert!(reason.contains("camera_segment/9"), "{reason}");
+}
+
+#[test]
+fn a_known_sensor_version_without_its_sensor_object_is_failed_not_unverifiable() {
+    // The other half of the moved premise: /3 is now known, so a /3 label on
+    // a body carrying no sensor_signature is CHECKED AND WRONG, not
+    // ungradeable. Silently reading it as a /2 would be the lenient read
+    // that the field-set rule exists to refuse.
     let b = body_v2("cam", 0, 0.0, 6.0, Value::Null, policy(6.0, 2.0, 0.0));
     let mut b3 = b;
     b3["schema"] = json!("camera_segment/3");
     let (chain, store) = chain_with_bodies(&bodies(&[b3]));
     let r = grade_capture_completeness(&chain, Some(&store));
-    let CaptureGrade::Unverifiable { reason } = &r.grade else {
-        panic!("want UNVERIFIABLE, got {:?}", r.grade);
+    let CaptureGrade::Failed { detail } = &r.grade else {
+        panic!("want FAILED, got {:?}", r.grade);
     };
-    assert!(reason.contains("camera_segment/3"), "{reason}");
+    assert!(detail.contains("carries no sensor_signature"), "{detail}");
 }
 
 #[test]

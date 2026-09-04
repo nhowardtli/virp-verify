@@ -51,6 +51,63 @@ use crate::verify::{ArtifactStore, SessionChain};
 /// inside a clean grade.
 const SCHEMA_V1: &str = "camera_segment/1";
 const SCHEMA_V2: &str = "camera_segment/2";
+const SCHEMA_V3: &str = "camera_segment/3";
+const SCHEMA_V4: &str = "camera_segment/4";
+const SCHEMA_V5: &str = "camera_segment/5";
+
+/// The `sensor_signature` field set at each version that carries one.
+///
+/// STRICTNESS IS THE POINT, and it mirrors the producer exactly: the field
+/// set IS the schema one level down, so a record claiming a version but
+/// carrying a different field count was not built by that producer. Docket
+/// grades that FAILED and names the counts rather than reading the fields it
+/// recognises and ignoring the rest — reading a subset is how a record with
+/// an unexpected shape ends up counted inside a clean result.
+const SENSOR_FIELDS_V3: &[&str] = &[
+    "asserted_first_frame",
+    "asserted_last_frame",
+    "device_firmware",
+    "device_serial",
+    "gops_invalid",
+    "gops_unsigned",
+    "gops_valid",
+    "gops_valid_with_missing",
+    "public_key",
+    "validator",
+    "validator_output_sha256",
+    "vendor",
+    "verdict",
+];
+/// `/4` adds the out-of-band leaf pin.
+const SENSOR_FIELDS_V4: &[&str] = &["public_key_pin", "sensor_key_sha256"];
+/// `/5` adds the certificate chain verified to a root the examiner holds.
+const SENSOR_FIELDS_V5: &[&str] = &["device_chain"];
+
+/// Expected `sensor_signature` field set for a schema, or `None` if that
+/// schema carries no sensor object at all (`/1`, `/2`).
+fn sensor_fields_for(schema: &str) -> Option<Vec<&'static str>> {
+    let mut v = SENSOR_FIELDS_V3.to_vec();
+    match schema {
+        SCHEMA_V3 => Some(v),
+        SCHEMA_V4 => {
+            v.extend_from_slice(SENSOR_FIELDS_V4);
+            Some(v)
+        }
+        SCHEMA_V5 => {
+            v.extend_from_slice(SENSOR_FIELDS_V4);
+            v.extend_from_slice(SENSOR_FIELDS_V5);
+            Some(v)
+        }
+        _ => None,
+    }
+}
+
+/// Every schema this grader reads a capture policy from. `/3`+ carry the
+/// same `capture_policy` as `/2`; the sensor object rides alongside and
+/// changes no completeness semantics.
+fn carries_policy(schema: &str) -> bool {
+    matches!(schema, SCHEMA_V2 | SCHEMA_V3 | SCHEMA_V4 | SCHEMA_V5)
+}
 
 /// The capture-completeness grade for one session (or, rolled up
 /// weakest-first, for a bundle). A separate vocabulary from [`crate::verify::Status`],
@@ -319,6 +376,202 @@ fn body_policy(body: &Value) -> Option<(f64, f64, f64)> {
     Some((nominal, jitter, max_gap))
 }
 
+/// Why this record's `sensor_signature` does not match the field set its
+/// schema promises, or `None`. Naming the counts and the specific
+/// missing/extra fields is deliberate: "wrong shape" that does not say
+/// which shape is a finding nobody can act on.
+fn sensor_field_defect(body: &Value, schema: &str) -> Option<String> {
+    let expected = sensor_fields_for(schema)?;
+    let Some(obj) = body.get("sensor_signature") else {
+        return Some(format!(
+            "{schema} record carries no sensor_signature; that object is required at this version \
+             ({} fields expected)",
+            expected.len()
+        ));
+    };
+    let Some(map) = obj.as_object() else {
+        return Some(format!("{schema} record's sensor_signature is not an object"));
+    };
+    let mut missing: Vec<&str> = expected.iter().copied().filter(|f| !map.contains_key(*f)).collect();
+    let mut extra: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !expected.contains(k))
+        .collect();
+    if missing.is_empty() && extra.is_empty() {
+        return None;
+    }
+    missing.sort_unstable();
+    extra.sort_unstable();
+    Some(format!(
+        "{schema} record's sensor_signature carries {} field(s), not the {} this version defines \
+         (missing: [{}]; unexpected: [{}]) — the field set is the schema at this version, so this \
+         record was not built by the producer it claims",
+        map.len(),
+        expected.len(),
+        missing.join(", "),
+        extra.join(", ")
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Sensor-signature summary — THE PRODUCER'S CLAIM, NOT DOCKET'S VERDICT
+// ---------------------------------------------------------------------------
+//
+// Everything below is PRESENTATION. It is deliberately kept out of
+// `overall_verdict()` and out of the [`crate::verify::Status`] ladder,
+// because Docket did not verify any of it: it did not run a signed-video
+// validator, it does not hold the camera's key, and it did not check a
+// certificate chain. What it can say is what the producer RECORDED, inside
+// bytes whose signature Docket did verify.
+//
+// That distinction is the whole reason this is a separate object with its
+// own caption. Folding a sensor verdict into the cryptographic ladder would
+// let "the camera says its video is authentic" read as "Docket verified the
+// video is authentic", which is exactly the collapse the ladder exists to
+// prevent.
+
+/// One session's `sensor_signature` claims, rolled up for display.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensorSummary {
+    /// Records carrying a sensor object at all (`/3`+).
+    pub records: usize,
+    /// Distinct vendors claimed; `null` vendor (an unsigning camera) is
+    /// reported as the literal `"none"` rather than dropped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vendors: Vec<String>,
+    /// Verdict counts, keyed by the producer's verdict vocabulary. Records
+    /// whose validator reported valid GOPs alongside missing ones are
+    /// counted separately so a lossy stream never reads as a clean one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verdicts: Vec<(String, usize)>,
+    /// UNVERIFIED is never a single fact; the producer records why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unverified_reasons: Vec<(String, usize)>,
+    /// Leaf-pin states claimed (`MATCH`, `MISMATCH`, ...), `/4`+.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_states: Vec<(String, usize)>,
+    /// Certificate-chain states claimed, `/5`+.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain_states: Vec<(String, usize)>,
+    /// Device serials the records claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_serials: Vec<String>,
+}
+
+/// The caption that must travel with every rendering of [`SensorSummary`].
+pub const SENSOR_CAPTION: &str = "the producer's recorded claim about the sensor, verified by the \
+                                  producer's own tooling — NOT verified by Docket";
+
+impl SensorSummary {
+    pub fn is_empty(&self) -> bool {
+        self.records == 0
+    }
+}
+
+fn bump(v: &mut Vec<(String, usize)>, key: &str) {
+    match v.iter_mut().find(|(k, _)| k == key) {
+        Some((_, n)) => *n += 1,
+        None => v.push((key.to_owned(), 1)),
+    }
+}
+
+fn push_unique(v: &mut Vec<String>, val: &str) {
+    if !v.iter().any(|x| x == val) {
+        v.push(val.to_owned());
+    }
+}
+
+/// Summarise the `sensor_signature` objects carried by a session's bodies.
+/// Reads only; grades nothing.
+pub fn summarise_sensor(chain: &SessionChain, store: Option<&ArtifactStore>) -> SensorSummary {
+    let mut out = SensorSummary::default();
+    let Some(store) = store else {
+        return out;
+    };
+    for e in &chain.entries {
+        let Some(bytes) = store.get(&e.fields.artifact_hash) else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
+            continue;
+        };
+        let Some(schema) = body.get("schema").and_then(Value::as_str) else {
+            continue;
+        };
+        if sensor_fields_for(schema).is_none() {
+            continue;
+        }
+        let Some(sensor) = body.get("sensor_signature").and_then(Value::as_object) else {
+            continue;
+        };
+        out.records += 1;
+
+        push_unique(
+            &mut out.vendors,
+            sensor.get("vendor").and_then(Value::as_str).unwrap_or("none"),
+        );
+        if let Some(serial) = sensor.get("device_serial").and_then(Value::as_str) {
+            push_unique(&mut out.device_serials, serial);
+        }
+
+        let verdict = sensor.get("verdict").and_then(Value::as_str).unwrap_or("ABSENT");
+        // A VALID record whose validator also counted GOPs with missing BUs
+        // is reported distinctly: the producer keeps that count precisely so
+        // it is not rounded up to a clean VALID here.
+        let missing = sensor
+            .get("gops_valid_with_missing")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if verdict == "VALID" && missing > 0 {
+            bump(&mut out.verdicts, "VALID-with-missing");
+        } else {
+            bump(&mut out.verdicts, verdict);
+        }
+        if verdict == "UNVERIFIED" {
+            // The producer's own recorded discriminators, in the order they
+            // narrow the question: an unreadable pin, then a key that is not
+            // ours, then a chain that does not reach our root.
+            let pin = sensor.get("public_key_pin").and_then(Value::as_str);
+            let chain_ok = sensor
+                .get("device_chain")
+                .and_then(|c| c.get("chain_verified"))
+                .and_then(Value::as_bool);
+            let serial_ok = sensor
+                .get("device_chain")
+                .and_then(|c| c.get("leaf_serial_matches_device"))
+                .and_then(Value::as_bool);
+            let reason = match (pin, chain_ok, serial_ok) {
+                (Some("PIN_UNREADABLE"), _, _) => "pinned key unreadable",
+                (Some("MISMATCH"), _, _) => "signed by a key that is not the pinned one",
+                (Some("NO_KEY_IN_STREAM"), _, _) => "no key in the stream to compare",
+                (_, Some(false), _) => "certificate chain does not reach the held root",
+                (_, _, Some(false)) => "leaf serial is not this device",
+                _ => "validator could not produce a verdict",
+            };
+            bump(&mut out.unverified_reasons, reason);
+        }
+
+        if let Some(pin) = sensor.get("public_key_pin").and_then(Value::as_str) {
+            bump(&mut out.pin_states, pin);
+        }
+        if let Some(chain) = sensor.get("device_chain").and_then(Value::as_object) {
+            let verified = chain.get("chain_verified").and_then(Value::as_bool);
+            let serial = chain.get("leaf_serial_matches_device").and_then(Value::as_bool);
+            let state = match (verified, serial) {
+                (Some(true), Some(true)) => "VERIFIED-TO-HELD-ROOT",
+                (Some(true), Some(false)) => "CHAIN-OK-SERIAL-MISMATCH",
+                (Some(false), _) => "NOT-VERIFIED-TO-HELD-ROOT",
+                _ => "UNREADABLE",
+            };
+            bump(&mut out.chain_states, state);
+        }
+    }
+    out.vendors.sort();
+    out.device_serials.sort();
+    out
+}
+
 /// Grade capture completeness for one session against the bodies the bundle
 /// carries. `store` is `None` for a hash-only bundle (no `--artifacts`).
 ///
@@ -391,7 +644,13 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
     for (_, body) in &cam_bodies {
         match body.get("schema").and_then(Value::as_str) {
             Some(SCHEMA_V1) => v1 += 1,
-            Some(SCHEMA_V2) => {}
+            Some(sch) if carries_policy(sch) => {
+                // Field-set strictness: a record claiming a version it does
+                // not structurally match is FAILED, not read leniently.
+                if let Some(defect) = sensor_field_defect(body, sch) {
+                    return CaptureReport::ungraded(CaptureGrade::Failed { detail: defect }, n);
+                }
+            }
             Some(other) => {
                 return CaptureReport::ungraded(
                     CaptureGrade::Unverifiable {

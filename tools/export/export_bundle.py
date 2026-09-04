@@ -78,6 +78,30 @@ artifacts/<hash>  (--artifacts only) raw artifact-body bytes, one file per
                 a stored body that does not hash to its column value is
                 exported AS STORED for the verifier to fail — fixing it
                 here would be judging.
+artifacts/<sha256>  (--referenced-artifacts only; it needs --artifacts) the
+                REFERENCED artifacts as well — the files a camera record
+                cites by digest but which have never travelled in a bundle:
+                the segment video (segment_sha256) and the validator's own
+                output about it (sensor_signature.validator_output_sha256).
+                Listed in the manifest as referenced_artifacts[{sha256,
+                cited_by, path, present}], separately from `artifacts`,
+                because those are the record and these are the bytes the
+                record is ABOUT.
+
+                THE FILE IS NAMED BY THE CITED DIGEST, NOT BY ITS OWN HASH,
+                and that is the whole point. A located file is carried
+                VERBATIM whether or not it hashes to what the record cites,
+                so a tampered segment lands at the cited name and the
+                verifier recomputes it into a FAILED. Naming it by its own
+                hash would file altered bytes under a name nobody looks up
+                and turn tampering into absence — the one confusion this
+                carriage cannot afford. Exports only; virp-verify judges.
+
+                A cited artifact this exporter cannot find is listed with
+                present=false and no path, NEVER omitted: "the bundle does
+                not carry it" and "the record cites nothing" must not read
+                the same, and the verifier grades a missing one ABSENT,
+                which is not a pass.
 keys.json       produced ONLY with --keys, from PUBLIC key files the operator
                 supplies in either form virp-verify --pin also reads: 64 hex
                 characters (the raw public key), or a docket keys.json
@@ -108,6 +132,7 @@ import argparse
 import base64
 import binascii
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -434,6 +459,137 @@ def fetch_artifact_bodies(conn, chains):
     return store, coverage
 
 
+# --- the referenced artifacts (what a camera record is ABOUT) -------------
+#
+# A camera_segment record commits by digest to files that have never
+# travelled in a bundle: the video, and — from /3 — the validator's own
+# output about that video. Measured 2026-09-04: a byte flipped in either
+# survived both virp-verify and virp_camera.py audit with output
+# byte-identical to the untampered run, because nothing carried the files
+# and nothing recomputed the digests. Carrying them is this half of the
+# fix; recomputing them is virp-verify's.
+#
+# The field PATHS are the vocabulary the producer's own SEGMENT PAYLOAD axis
+# uses (virp_camera.py), deliberately: two tools reporting on the same two
+# artifacts must name them the same way or an examiner cannot line the
+# reports up.
+CITED_SEGMENT = "segment_sha256"
+CITED_VALIDATOR_OUTPUT = "sensor_signature.validator_output_sha256"
+
+HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+def cited_digests(body):
+    """{field path: digest} for one camera_segment body, or {} for anything
+    else.
+
+    Structural only, like every other read in this exporter: a value that is
+    not a 64-hex digest is not a citation this can act on, and whether the
+    sensor object is WELL FORMED at its own schema version is the verifier's
+    judgement, not ours. Under-reading here is safe — a citation this misses
+    is simply not carried — while over-reading would invent one."""
+    if not isinstance(body, dict):
+        return {}
+    schema = body.get("schema")
+    if not isinstance(schema, str) or not schema.startswith("camera_segment/"):
+        return {}
+    out = {}
+    seg = body.get(CITED_SEGMENT)
+    if isinstance(seg, str) and HEX64.match(seg):
+        out[CITED_SEGMENT] = seg
+    sensor = body.get("sensor_signature")
+    if isinstance(sensor, dict):
+        vo = sensor.get("validator_output_sha256")
+        if isinstance(vo, str) and HEX64.match(vo):
+            out[CITED_VALIDATOR_OUTPUT] = vo
+    return out
+
+
+def referenced_patterns(field, seg_sha, digest):
+    """Filename patterns under which a cited artifact may be found — the same
+    two layouts `virp_camera.py audit --artifact-dir` looks in, so a file the
+    producer's own auditor can check is a file this can carry:
+
+      outbox             <camera>.<seq>.<segment_sha256>.mp4
+                         <camera>.<seq>.<segment_sha256>.validation.txt
+      content-addressed  <digest>.<ext>
+
+    Both outbox names key on the SEGMENT digest — that is how the driver
+    names a segment's whole file set — so a validator output is located
+    through the segment it belongs to, not through its own hash. That is
+    also what lets an ALTERED validator output still be found and carried."""
+    if field == CITED_SEGMENT:
+        return (f"*.{seg_sha}.mp4", f"{seg_sha}.mp4")
+    return (f"*.{seg_sha}.validation.txt", f"*.{seg_sha}.validation_results.txt", f"{digest}.txt")
+
+
+def find_referenced(dirs, field, seg_sha, digest):
+    """The first file across the search directories matching this artifact's
+    naming, or None. Digests are hex, so they carry no glob metacharacters
+    and the patterns above cannot be widened by their own inputs."""
+    for d in dirs:
+        for pat in referenced_patterns(field, seg_sha, digest):
+            hits = sorted(glob.glob(os.path.join(d, pat)))
+            if hits:
+                return hits[0]
+    return None
+
+
+def collect_referenced(chains, store, dirs):
+    """[{sha256, cited_by, present, source}] over every camera record in the
+    selected chains, sorted by digest.
+
+    `source` is the local path the bytes came from and never reaches the
+    manifest: where a file sat on the exporting machine is not a fact about
+    the evidence, and the bundle already names the artifact by its digest."""
+    found = {}
+    for chain in chains:
+        for entry in chain["entries"]:
+            data = store.get(entry["artifact_hash"])
+            if data is None:
+                continue
+            try:
+                body = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                continue
+            cited = cited_digests(body)
+            if not cited:
+                continue
+            seg_sha = cited.get(CITED_SEGMENT, "")
+            seq = body.get("segment_seq")
+            for field, digest in sorted(cited.items()):
+                rec = found.setdefault(
+                    digest, {"sha256": digest, "cited_by": [], "present": False, "source": None}
+                )
+                citation = {
+                    "session_id": chain["session_id"],
+                    "segment_seq": seq,
+                    "field": field,
+                }
+                if citation not in rec["cited_by"]:
+                    rec["cited_by"].append(citation)
+                if rec["source"] is None:
+                    path = find_referenced(dirs, field, seg_sha, digest)
+                    if path is not None:
+                        rec["source"] = path
+                        rec["present"] = True
+    for rec in found.values():
+        rec["cited_by"].sort(key=lambda c: (c["session_id"], c["segment_seq"] or 0, c["field"]))
+    return [found[d] for d in sorted(found)]
+
+
+def read_referenced_bytes(rec):
+    """The located file's bytes, read whole. NOT checked against the digest:
+    a file that does not hash to what the record cites is exactly the case
+    this carriage exists to put in front of the verifier, and refusing it
+    here would hide a tamper as an absence."""
+    try:
+        with open(rec["source"], "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise ExportError(f"cannot read referenced artifact {rec['source']}: {e}") from e
+
+
 def partition_redacted(store):
     """Split a body store into (carried, withheld) under docket-mask-v1.
 
@@ -715,8 +871,18 @@ def write_bytes(path, data):
 
 def run_export(
     db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False, key_paths=None,
-    seal_sig_path=None, redacted=False,
+    seal_sig_path=None, redacted=False, referenced_dirs=None,
 ):
+    referenced_dirs = list(referenced_dirs or [])
+    if referenced_dirs and not artifacts:
+        raise ExportError(
+            "--referenced-artifacts carries the files the camera BODIES cite, and a bundle without "
+            "--artifacts carries no bodies to read the citations out of\n"
+            "  add --artifacts: there is nothing to reference from otherwise"
+        )
+    for d in referenced_dirs:
+        if not os.path.isdir(d):
+            raise ExportError(f"--referenced-artifacts: not a directory: {d}")
     if redacted and not artifacts:
         raise ExportError(
             "--redacted withholds bodies that carry secrets, and a bundle without --artifacts carries "
@@ -785,6 +951,12 @@ def run_export(
     if redacted:
         body_store, withheld = partition_redacted(body_store)
 
+    # Collected from the bodies that will actually be CARRIED, after any
+    # redaction: the verifier re-derives the citations from those same bytes,
+    # so listing a citation whose body was withheld would name something the
+    # verifier cannot confirm the bundle ever cited.
+    referenced = collect_referenced(chains, body_store, referenced_dirs) if referenced_dirs else []
+
     written = []  # (relative path, sha256)
     os.makedirs(os.path.join(out_dir, "sessions"), exist_ok=False)
     taken = set()
@@ -826,6 +998,24 @@ def run_export(
             digest = write_bytes(os.path.join(out_dir, rel), body_store[ahash])
             written.append((rel, digest))
             manifest["artifacts"].append({"artifact_hash": ahash, "path": rel})
+    if referenced_dirs:
+        manifest["referenced_artifacts"] = []
+        for rec in referenced:
+            entry = {"sha256": rec["sha256"], "cited_by": rec["cited_by"], "present": rec["present"]}
+            if rec["present"]:
+                # Named by the CITED digest, not by the bytes' own hash: the
+                # verifier looks the citation up and recomputes, so altered
+                # bytes grade FAILED instead of disappearing into ABSENT.
+                rel = "artifacts/" + rec["sha256"]
+                if rec["sha256"] in body_store:
+                    raise ExportError(
+                        f"referenced artifact {rec['sha256']} collides with a carried body of the same "
+                        f"digest; refusing to overwrite evidence with evidence"
+                    )
+                digest = write_bytes(os.path.join(out_dir, rel), read_referenced_bytes(rec))
+                written.append((rel, digest))
+                entry["path"] = rel
+            manifest["referenced_artifacts"].append(entry)
     if redacted:
         import docket_mask
 
@@ -864,6 +1054,21 @@ def run_export(
             print(line)
     if artifacts:
         print(f"  artifact bodies carried: {len(body_store)} distinct artifact_hash file(s) under artifacts/")
+    if referenced_dirs:
+        present = sum(1 for r in referenced if r["present"])
+        missing = len(referenced) - present
+        print(
+            f"  referenced artifacts: {len(referenced)} cited by the carried camera records; "
+            f"{present} carried, {missing} not found (listed present=false)"
+        )
+        print(
+            "  carried VERBATIM under the digest the record cites, unchecked here — virp-verify "
+            "recomputes them as referenced_artifact_binding, and a missing one grades ABSENT"
+        )
+        for rec in referenced:
+            if not rec["present"]:
+                c = rec["cited_by"][0]
+                print(f"    NOT FOUND  {rec['sha256']}  cited by seq {c['segment_seq']} {c['field']}")
     if redacted:
         import docket_mask
 
@@ -922,6 +1127,18 @@ def main(argv=None):
         "Nothing is modified — omission at export, never rewriting; every artifact_hash still commits "
         "to the original body and no verdict moves",
     )
+    p.add_argument(
+        "--referenced-artifacts",
+        action="append",
+        metavar="DIR",
+        help="directory to search for the files the camera records CITE by digest — the segment video "
+        "(segment_sha256) and the validator output (sensor_signature.validator_output_sha256). "
+        "Repeatable. Both layouts virp_camera.py audit --artifact-dir reads are searched: the "
+        "capture-host outbox (<camera>.<seq>.<segment_sha256>.<ext>) and content-addressed "
+        "(<digest>.<ext>). Found files are carried under artifacts/<cited digest> VERBATIM and "
+        "unchecked — virp-verify recomputes them. A cited artifact that is not found is listed "
+        "present=false, never omitted. Requires --artifacts",
+    )
     p.add_argument("--list-sessions", action="store_true", help="list session ids in the database and exit")
     args = p.parse_args(argv)
 
@@ -943,7 +1160,7 @@ def main(argv=None):
             p.error("give exactly one of --sessions <id>... or --all-sessions")
         return run_export(
             args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts, args.keys,
-            args.seal_sig, args.redacted,
+            args.seal_sig, args.redacted, args.referenced_artifacts,
         )
     except ExportError as e:
         print(f"export_bundle.py: error: {e}", file=sys.stderr)

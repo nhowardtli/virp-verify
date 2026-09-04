@@ -1,0 +1,37 @@
+-----------------------------
+PUBLIC KEY IS VALID!
+-----------------------------
+VIDEO IS VALID!
+Number of valid GOPs: 4
+Number of valid GOPs with missing BUs: 0
+Number of invalid GOPs: 0
+Number of GOPs without signature: 0
+-----------------------------
+
+Product Info
+-----------------------------
+Hardware ID:      932.4
+Serial Number:    B8A44FDD572C
+Firmware version: 12.5.68
+Manufacturer:     Axis Communications AB
+Address:          www.axis.com
+-----------------------------
+
+Signed Video timestamps
+-----------------------------
+First frame:           Fri 2026-09-04 00:58:06 GMT
+Last validated frame:  Fri 2026-09-04 00:58:11 GMT
+-----------------------------
+
+Signed Video size footprint
+-----------------------------
+Total video:         116992 B
+Signed Video data:    17565 B
+Bitrate increase:     17.67 %
+-----------------------------
+
+Versions of signed-video-framework
+-----------------------------
+Validator (v2.0.2) runs: v2.3.10
+Camera runs:             v2.2.1
+-----------------------------

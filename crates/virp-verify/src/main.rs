@@ -102,8 +102,64 @@ EXIT CODES (deliberately NOT collapsed into pass/fail):
                                     verdict did not fail; without the flag the same bundle keeps
                                     its verdict exit code
 
+WHAT IS RECOMPUTED, AND WHAT IS NOT:
+    Every hash, link, HMAC-shaped field and signature in the chain, plus each
+    carried artifact BODY against its artifact_hash. When a bundle carries the
+    REFERENCED artifacts (exporter --referenced-artifacts) the two digests a
+    camera record cites are recomputed too — segment_sha256 over the segment
+    video, and sensor_signature.validator_output_sha256 over the validator's
+    output — and reported as referenced_artifact_binding. Which digests are
+    cited comes from the signed BODIES, never from the unsigned manifest.
+    A bundle that does not carry them grades ABSENT, which is not a pass.
+    Still not recomputed: prev_segment_sha256 as a chain of files,
+    sensor_key_sha256, device_chain.anchor_sha256 — and no frame is ever
+    decoded, so nothing here judges what the video SHOWS.
+
 virp-verify never signs, never holds a private key, and never executes anything.
 ";
+
+/// The producer's sensor claim, rendered DELIBERATELY UNLIKE the property
+/// ladder above it: indented under a `claims:` marker, lower-case keys, no
+/// VERIFIED/FAILED vocabulary, and a caption on every rendering. A reader
+/// skimming for Docket's verdict must not be able to mistake this block for
+/// one — Docket ran no validator and holds no camera key.
+fn render_sensor_summary(out: &mut String, sensor: &docket_bundle::SensorSummary) {
+    use std::fmt::Write as _;
+    if sensor.is_empty() {
+        return;
+    }
+    let counts = |v: &[(String, usize)]| v.iter().map(|(k, n)| format!("{k}={n}")).collect::<Vec<_>>().join(" ");
+    let _ = writeln!(
+        out,
+        "  claims: sensor_signature ({} record(s)) — {}",
+        sensor.records,
+        docket_bundle::SENSOR_CAPTION
+    );
+    let _ = writeln!(
+        out,
+        "      vendor={}  serial={}",
+        if sensor.vendors.is_empty() {
+            "—".to_owned()
+        } else {
+            sensor.vendors.join(",")
+        },
+        if sensor.device_serials.is_empty() {
+            "—".to_owned()
+        } else {
+            sensor.device_serials.join(",")
+        }
+    );
+    let _ = writeln!(out, "      producer verdicts: {}", counts(&sensor.verdicts));
+    if !sensor.unverified_reasons.is_empty() {
+        let _ = writeln!(out, "      unverified because: {}", counts(&sensor.unverified_reasons));
+    }
+    if !sensor.pin_states.is_empty() {
+        let _ = writeln!(out, "      leaf key pin:      {}", counts(&sensor.pin_states));
+    }
+    if !sensor.chain_states.is_empty() {
+        let _ = writeln!(out, "      device chain:      {}", counts(&sensor.chain_states));
+    }
+}
 
 fn main() -> ExitCode {
     let mut json = false;
@@ -476,6 +532,17 @@ fn render_text(
                 .unwrap_or_default();
             out.push_str(&status_line("artifact_binding", binding, &detail));
         }
+        // The bytes the records are ABOUT, next to the records themselves —
+        // a different question, and deliberately its own row: a verified
+        // body says nothing about the video it describes.
+        if let Some(binding) = &s.referenced_artifact_binding {
+            let detail = s
+                .referenced_coverage
+                .as_ref()
+                .map(docket_bundle::ReferencedCoverage::detail)
+                .unwrap_or_default();
+            out.push_str(&status_line("referenced_artifact_binding", binding, &detail));
+        }
         // The two signer axes, rendered separately and never merged: whether
         // the cryptography held, and whether the key that checked it was
         // examiner-pinned.
@@ -527,6 +594,7 @@ fn render_text(
             cc.grade.label(),
             cc.detail
         );
+        render_sensor_summary(&mut out, &s.sensor);
         for g in &cc.external_predecessor_gaps {
             let _ = writeln!(
                 out,
@@ -618,6 +686,18 @@ fn render_text(
             }
         }
     }
+    // Bytes, not identity. Kept apart from source_device_established on
+    // purpose: every cited artifact can verify and still say nothing about
+    // which physical camera produced them.
+    if let Some(ra) = &b.referenced_artifact_binding {
+        let _ = writeln!(
+            out,
+            "  {:<28} {:<28} {}",
+            "referenced_artifact_binding",
+            ra.status.label(),
+            ra.detail
+        );
+    }
     let _ = writeln!(out);
     let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());
     let _ = writeln!(out);
@@ -679,7 +759,11 @@ fn render_text(
     );
     let _ = writeln!(
         out,
-        "Docket verifies DECLARED capture continuity between authenticated camera records. It does not inspect the referenced video to prove each declared window contains footage; segment_sha256 is a reference this tool does not recompute."
+        "Docket verifies DECLARED capture continuity between authenticated camera records. It does not inspect the referenced video to prove each declared window contains footage — no frame is decoded and no scene is judged."
+    );
+    let _ = writeln!(
+        out,
+        "What referenced_artifact_binding covers: the two artifacts a camera record cites by digest — the segment video (segment_sha256) and the validator's own output about it (sensor_signature.validator_output_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry, which is every bundle exported before the exporter could carry them. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256, and device_chain.anchor_sha256."
     );
     let _ = writeln!(
         out,

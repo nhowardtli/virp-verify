@@ -14,6 +14,33 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(sha256(data))
 }
 
+/// Incremental SHA-256, for input too large to hold in memory.
+///
+/// The referenced artifacts a bundle can carry are video: the reader digests
+/// them a block at a time and keeps only the hex, so peak memory does not
+/// track the size of the evidence.
+pub struct Sha256Stream(Sha256);
+
+impl Sha256Stream {
+    pub fn new() -> Sha256Stream {
+        Sha256Stream(Sha256::new())
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn finish_hex(self) -> String {
+        hex::encode(self.0.finalize())
+    }
+}
+
+impl Default for Sha256Stream {
+    fn default() -> Sha256Stream {
+        Sha256Stream::new()
+    }
+}
+
 /// Length of a `key_id` in raw bytes (sha256-raw-16).
 pub const KEY_ID_LEN: usize = 16;
 

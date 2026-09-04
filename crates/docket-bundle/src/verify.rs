@@ -500,6 +500,184 @@ pub fn grade_artifact_binding(chain: &SessionChain, store: &ArtifactStore) -> (S
 }
 
 // ---------------------------------------------------------------------------
+// Referenced-artifact binding — the bytes a record is ABOUT
+// ---------------------------------------------------------------------------
+//
+// `artifact_binding` answers "is the carried record the record the chain
+// committed to". It says nothing about the VIDEO that record was written
+// about, and until this property existed nothing here did: measured
+// 2026-09-04, a byte flipped in a segment mp4 and a byte flipped in a
+// validation_results.txt each left this verifier's output byte-identical to
+// the untampered run. The tool said as much in its own epilogue —
+// "segment_sha256 is a reference this tool does not recompute".
+//
+// WHICH DIGESTS ARE CITED IS RE-DERIVED FROM THE CARRIED BODIES, never read
+// out of the manifest. The manifest is unsigned metadata and says only where
+// bytes sit; the bodies are hash-bound and producer-signed, so they are the
+// only trustworthy statement of what this evidence commits to. A manifest
+// listing a digest no record cites therefore proves nothing, and a manifest
+// omitting one a record DOES cite cannot hide it — that citation grades
+// ABSENT.
+//
+// ABSENT STAYS ABSENT. A cited artifact the bundle does not carry was not
+// checked, and "not checked" must never share a shape with "verified" — the
+// rule the sensor verdict vocabulary was closed for.
+
+/// One referenced artifact as the bundle carries it: where the bytes sit and
+/// what they actually hash to, recomputed at read time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedReferenced {
+    /// Relative path inside the bundle.
+    pub path: String,
+    /// SHA-256 recomputed over the file's bytes, compared against the digest
+    /// it is filed under — which is what the record cites.
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Referenced artifacts keyed by the CITED digest they are filed under.
+/// `None` for a row the bundle lists but carries no bytes for.
+pub type ReferencedStore = BTreeMap<String, Option<CarriedReferenced>>;
+
+/// One citation that did not verify, named so a reader can act on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferencedDefect {
+    /// Chain sequence of the entry whose body carries the citation.
+    pub sequence: i64,
+    /// `segment_seq` from the body — what an operator recognises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_seq: Option<i64>,
+    /// Field path inside the record that carries the digest.
+    pub field: String,
+    /// What the record commits to.
+    pub cited: String,
+    /// What the carried file actually hashes to. `None` when nothing was
+    /// carried — the ABSENT case, which is not a mismatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recomputed: Option<String>,
+}
+
+/// Per-session coverage of the referenced artifacts. Honest by construction:
+/// every citation lands in exactly one of the three counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferencedCoverage {
+    /// Citations found in the carried bodies: two per `/3`-and-later camera
+    /// record (segment and validator output), one per earlier one.
+    pub citations: usize,
+    pub verified: usize,
+    pub absent: usize,
+    pub failed: usize,
+    /// Mismatches: a file IS carried and hashes to something else.
+    pub failures: Vec<ReferencedDefect>,
+    /// Citations the bundle carries no bytes for.
+    pub absences: Vec<ReferencedDefect>,
+}
+
+impl ReferencedCoverage {
+    /// Human-readable coverage line for reports.
+    pub fn detail(&self) -> String {
+        if self.citations == 0 {
+            return "no camera record in this session cites an artifact by digest".to_owned();
+        }
+        // Counts only. The specific mismatch rides in the FAILED status,
+        // which the report renders after this line — the same split
+        // artifact_binding uses, so neither is printed twice.
+        let mut s = format!(
+            "{}/{} cited artifact(s) recomputed against the citing field",
+            self.verified, self.citations
+        );
+        if self.failed > 0 {
+            s.push_str(&format!("; {} mismatched", self.failed));
+        }
+        if self.absent > 0 {
+            s.push_str(&format!("; {} not carried — ABSENT, not a pass", self.absent));
+        }
+        s
+    }
+}
+
+/// Grade whether every artifact the carried camera records cite by digest is
+/// present in the bundle and hashes to what the record commits to.
+///
+/// `store` supplies the bodies the citations are read from; `referenced`
+/// supplies what the bundle carries. Either being `None` is ABSENT: with no
+/// bodies there is nothing to derive citations from, and with no
+/// `referenced_artifacts` section there is nothing to check them against.
+pub fn grade_referenced_artifact_binding(
+    chain: &SessionChain,
+    store: Option<&ArtifactStore>,
+    referenced: Option<&ReferencedStore>,
+) -> (Status, ReferencedCoverage) {
+    let mut cov = ReferencedCoverage {
+        citations: 0,
+        verified: 0,
+        absent: 0,
+        failed: 0,
+        failures: Vec::new(),
+        absences: Vec::new(),
+    };
+    let (Some(store), Some(referenced)) = (store, referenced) else {
+        return (Status::Absent, cov);
+    };
+
+    for e in &chain.entries {
+        let Some(bytes) = store.get(&e.fields.artifact_hash) else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            continue;
+        };
+        let segment_seq = body.get("segment_seq").and_then(serde_json::Value::as_i64);
+        for (field, cited) in crate::camera::cited_digests(&body) {
+            cov.citations += 1;
+            let defect = |recomputed: Option<String>| ReferencedDefect {
+                sequence: e.fields.sequence,
+                segment_seq,
+                field: field.clone(),
+                cited: cited.clone(),
+                recomputed,
+            };
+            match referenced.get(&cited) {
+                // Listed and carried: the only case that can verify.
+                Some(Some(carried)) if carried.sha256 == cited => cov.verified += 1,
+                Some(Some(carried)) => {
+                    cov.failed += 1;
+                    cov.failures.push(defect(Some(carried.sha256.clone())));
+                }
+                // present=false, or not listed at all. The same fact for a
+                // reader: the bundle put no bytes in front of them, so
+                // nothing was checked.
+                Some(None) | None => {
+                    cov.absent += 1;
+                    cov.absences.push(defect(None));
+                }
+            }
+        }
+    }
+
+    let status = if cov.failed > 0 {
+        // The specific mismatch only. `status_line` renders this AFTER the
+        // coverage detail, so repeating the counts here would print them
+        // twice — the same split artifact_binding already uses.
+        let d = &cov.failures[0];
+        Status::Failed {
+            detail: format!(
+                "segment_seq {} cites {} {}, and the carried file hashes to {}",
+                d.segment_seq.unwrap_or(d.sequence),
+                d.field,
+                d.cited,
+                d.recomputed.as_deref().unwrap_or("?")
+            ),
+        }
+    } else if cov.citations == 0 || cov.absent > 0 {
+        Status::Absent
+    } else {
+        Status::Verified
+    };
+    (status, cov)
+}
+
+// ---------------------------------------------------------------------------
 // The walk
 // ---------------------------------------------------------------------------
 

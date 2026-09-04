@@ -68,6 +68,19 @@ pub struct Limits {
     /// All artifact bodies in one bundle. The whole chain's bodies total
     /// 4.2 MB.
     pub artifact_bytes_total: u64,
+    /// One REFERENCED artifact — a file a camera record cites by digest
+    /// (segment video, validator output), not a chain body. A different
+    /// order of size from bodies, so a separate ceiling: the largest real
+    /// segment measured is 217 KB and a validator output ~1 KB, but longer
+    /// segments and higher bitrates are legitimate.
+    ///
+    /// These are never held in memory — the reader streams each file and
+    /// keeps only its digest — so this bounds HASHING TIME against a hostile
+    /// bundle, not allocation.
+    pub referenced_artifact_bytes: u64,
+    /// Every referenced artifact in one bundle. Nine records of lab footage
+    /// total 1.5 MB; a day of continuous six-second segments would be ~2 GB.
+    pub referenced_artifact_bytes_total: u64,
 
     // --- counts ----------------------------------------------------------
     /// Sessions listed in the manifest. The reference seal lists 350; the
@@ -114,6 +127,8 @@ impl Default for Limits {
             session_bytes: 64 * MIB,
             artifact_body_bytes: 16 * MIB,
             artifact_bytes_total: GIB,
+            referenced_artifact_bytes: 4 * GIB,
+            referenced_artifact_bytes_total: 64 * GIB,
 
             sessions: 10_000,
             entries_per_session: 250_000,
@@ -144,6 +159,8 @@ impl Limits {
             session_bytes: u64::MAX,
             artifact_body_bytes: u64::MAX,
             artifact_bytes_total: u64::MAX,
+            referenced_artifact_bytes: u64::MAX,
+            referenced_artifact_bytes_total: u64::MAX,
             sessions: usize::MAX,
             entries_per_session: usize::MAX,
             entries_total: usize::MAX,

@@ -76,6 +76,28 @@ fn sensor_v5(verdict: &str, pin: &str, chain_verified: bool, serial_ok: bool) ->
     Value::Object(m)
 }
 
+/// `/6` = `/5` with the leaf recorded by digest. The sensor_signature key
+/// set is UNCHANGED — the growth is inside device_chain, which is the whole
+/// reason the deeper field check has to exist.
+fn sensor_v6(verdict: &str, pin: &str, chain_verified: bool, serial_ok: bool) -> Value {
+    let mut m = sensor_v5(verdict, pin, chain_verified, serial_ok)
+        .as_object()
+        .unwrap()
+        .clone();
+    let mut chain = m["device_chain"].as_object().unwrap().clone();
+    chain.insert("leaf_sha256".into(), json!("dd".repeat(32)));
+    m.insert("device_chain".into(), Value::Object(chain));
+    Value::Object(m)
+}
+
+/// The same object with device_chain replaced wholesale — for the pair of
+/// tests that cross a /5 chain with a /6 label and back.
+fn with_chain(sensor: Value, chain: Value) -> Value {
+    let mut m = sensor.as_object().unwrap().clone();
+    m.insert("device_chain".into(), chain);
+    Value::Object(m)
+}
+
 fn body(schema: &str, seq: i64, start_s: f64, end_s: f64, sensor: Option<Value>) -> Value {
     let mut m = Map::new();
     m.insert("schema".into(), json!(schema));
@@ -211,6 +233,112 @@ fn a_v5_label_missing_device_chain_is_failed() {
     let (chain, store) = chain_with(&[body("camera_segment/5", 0, 0.0, 6.0, Some(sensor_v4("VALID", "MATCH")))]);
     match grade_capture_completeness(&chain, Some(&store)).grade {
         CaptureGrade::Failed { ref detail } => assert!(detail.contains("missing: [device_chain]"), "{detail}"),
+        other => panic!("expected FAILED, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /6: the version whose growth is one level deeper
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v6_grades_completeness_like_every_version_before_it() {
+    let (chain, store) = chain_with(&[
+        body(
+            "camera_segment/6",
+            0,
+            0.0,
+            6.0,
+            Some(sensor_v6("VALID", "MATCH", true, true)),
+        ),
+        body(
+            "camera_segment/6",
+            1,
+            6.0,
+            12.0,
+            Some(sensor_v6("VALID", "MATCH", true, true)),
+        ),
+    ]);
+    assert_eq!(
+        grade_capture_completeness(&chain, Some(&store)).grade,
+        CaptureGrade::Continuous
+    );
+}
+
+#[test]
+fn v5_and_v6_carry_the_same_sensor_signature_keys() {
+    // Which is exactly why the chain object has to be graded on its own:
+    // the level above cannot separate these two versions.
+    let five = sensor_v5("VALID", "MATCH", true, true);
+    let six = sensor_v6("VALID", "MATCH", true, true);
+    let keys = |v: &Value| {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    assert_eq!(keys(&five), keys(&six));
+}
+
+#[test]
+fn a_v6_label_carrying_a_v5_chain_is_failed() {
+    let sensor = with_chain(
+        sensor_v6("VALID", "MATCH", true, true),
+        sensor_v5("VALID", "MATCH", true, true)["device_chain"].clone(),
+    );
+    let (chain, store) = chain_with(&[body("camera_segment/6", 0, 0.0, 6.0, Some(sensor))]);
+    match grade_capture_completeness(&chain, Some(&store)).grade {
+        CaptureGrade::Failed { ref detail } => {
+            assert!(detail.contains("device_chain"), "{detail}");
+            assert!(detail.contains("missing: [leaf_sha256]"), "{detail}");
+        }
+        other => panic!("expected FAILED, got {other:?}"),
+    }
+}
+
+/// The direction that matters most: accepting an extra field at a FROZEN
+/// version is how a claim gets appended to signed history.
+#[test]
+fn a_v5_label_carrying_a_v6_chain_is_failed() {
+    let sensor = with_chain(
+        sensor_v5("VALID", "MATCH", true, true),
+        sensor_v6("VALID", "MATCH", true, true)["device_chain"].clone(),
+    );
+    let (chain, store) = chain_with(&[body("camera_segment/5", 0, 0.0, 6.0, Some(sensor))]);
+    match grade_capture_completeness(&chain, Some(&store)).grade {
+        CaptureGrade::Failed { ref detail } => {
+            assert!(detail.contains("unexpected: [leaf_sha256]"), "{detail}");
+        }
+        other => panic!("expected FAILED, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_null_device_chain_stays_legal_at_both_versions() {
+    // An unsigning camera, or one with no anchor configured, records the
+    // absence. That is an honest statement, not a defective record.
+    for (schema, sensor) in [
+        ("camera_segment/5", sensor_v5("UNSIGNED", "MATCH", true, true)),
+        ("camera_segment/6", sensor_v6("UNSIGNED", "MATCH", true, true)),
+    ] {
+        let (chain, store) = chain_with(&[body(schema, 0, 0.0, 6.0, Some(with_chain(sensor, Value::Null)))]);
+        assert!(
+            !matches!(
+                grade_capture_completeness(&chain, Some(&store)).grade,
+                CaptureGrade::Failed { .. }
+            ),
+            "{schema} refused a null device_chain"
+        );
+    }
+}
+
+#[test]
+fn a_device_chain_that_is_not_an_object_is_failed() {
+    let sensor = with_chain(sensor_v6("VALID", "MATCH", true, true), json!("intermediate_pinned"));
+    let (chain, store) = chain_with(&[body("camera_segment/6", 0, 0.0, 6.0, Some(sensor))]);
+    match grade_capture_completeness(&chain, Some(&store)).grade {
+        CaptureGrade::Failed { ref detail } => {
+            assert!(detail.contains("neither an object nor null"), "{detail}");
+        }
         other => panic!("expected FAILED, got {other:?}"),
     }
 }

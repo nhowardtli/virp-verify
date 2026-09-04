@@ -54,6 +54,7 @@ const SCHEMA_V2: &str = "camera_segment/2";
 const SCHEMA_V3: &str = "camera_segment/3";
 const SCHEMA_V4: &str = "camera_segment/4";
 const SCHEMA_V5: &str = "camera_segment/5";
+const SCHEMA_V6: &str = "camera_segment/6";
 
 /// The `sensor_signature` field set at each version that carries one.
 ///
@@ -83,6 +84,39 @@ const SENSOR_FIELDS_V4: &[&str] = &["public_key_pin", "sensor_key_sha256"];
 /// `/5` adds the certificate chain verified to a root the examiner holds.
 const SENSOR_FIELDS_V5: &[&str] = &["device_chain"];
 
+/// The `device_chain` field set at each version that carries the object.
+///
+/// The same rule as `sensor_signature`, one level DEEPER — and at `/5` vs
+/// `/6` it is the ONLY thing that separates the two versions, because their
+/// sensor_signature key sets are identical. `/6` grows this object alone.
+/// Before `/6` this object's shape was not checked at all on either side,
+/// so a record could carry a device_chain of any shape and pass.
+const DEVICE_CHAIN_FIELDS_V5: &[&str] = &[
+    "anchor",
+    "anchor_sha256",
+    "chain_to_anchor_verified",
+    "leaf_not_after",
+    "leaf_serial_matches_device",
+];
+/// `/6` records WHICH certificate the assertions above are about. `/5` bound
+/// the anchor by digest and the leaf by four booleans nothing could
+/// re-derive; `leaf_sha256` is the digest of the leaf's DER.
+const DEVICE_CHAIN_FIELDS_V6: &[&str] = &["leaf_sha256"];
+
+/// Expected `device_chain` field set for a schema, or `None` if that schema
+/// carries no chain object.
+fn device_chain_fields_for(schema: &str) -> Option<Vec<&'static str>> {
+    let mut v = DEVICE_CHAIN_FIELDS_V5.to_vec();
+    match schema {
+        SCHEMA_V5 => Some(v),
+        SCHEMA_V6 => {
+            v.extend_from_slice(DEVICE_CHAIN_FIELDS_V6);
+            Some(v)
+        }
+        _ => None,
+    }
+}
+
 /// Expected `sensor_signature` field set for a schema, or `None` if that
 /// schema carries no sensor object at all (`/1`, `/2`).
 fn sensor_fields_for(schema: &str) -> Option<Vec<&'static str>> {
@@ -93,7 +127,9 @@ fn sensor_fields_for(schema: &str) -> Option<Vec<&'static str>> {
             v.extend_from_slice(SENSOR_FIELDS_V4);
             Some(v)
         }
-        SCHEMA_V5 => {
+        // /5 and /6 share this set: /6's growth is inside device_chain,
+        // one level down, and is graded by device_chain_fields_for.
+        SCHEMA_V5 | SCHEMA_V6 => {
             v.extend_from_slice(SENSOR_FIELDS_V4);
             v.extend_from_slice(SENSOR_FIELDS_V5);
             Some(v)
@@ -106,7 +142,7 @@ fn sensor_fields_for(schema: &str) -> Option<Vec<&'static str>> {
 /// same `capture_policy` as `/2`; the sensor object rides alongside and
 /// changes no completeness semantics.
 fn carries_policy(schema: &str) -> bool {
-    matches!(schema, SCHEMA_V2 | SCHEMA_V3 | SCHEMA_V4 | SCHEMA_V5)
+    matches!(schema, SCHEMA_V2 | SCHEMA_V3 | SCHEMA_V4 | SCHEMA_V5 | SCHEMA_V6)
 }
 
 /// The capture-completeness grade for one session (or, rolled up
@@ -399,7 +435,7 @@ fn sensor_field_defect(body: &Value, schema: &str) -> Option<String> {
         .filter(|k| !expected.contains(k))
         .collect();
     if missing.is_empty() && extra.is_empty() {
-        return None;
+        return device_chain_defect(map.get("device_chain"), schema);
     }
     missing.sort_unstable();
     extra.sort_unstable();
@@ -407,6 +443,52 @@ fn sensor_field_defect(body: &Value, schema: &str) -> Option<String> {
         "{schema} record's sensor_signature carries {} field(s), not the {} this version defines \
          (missing: [{}]; unexpected: [{}]) — the field set is the schema at this version, so this \
          record was not built by the producer it claims",
+        map.len(),
+        expected.len(),
+        missing.join(", "),
+        extra.join(", ")
+    ))
+}
+
+/// The same strictness one level DEEPER, on `device_chain`.
+///
+/// This is the only check that separates `/5` from `/6`: their
+/// sensor_signature key sets are identical, so a grader that stopped at the
+/// level above would read a `/5` object as a valid `/6` and a `/6` object as
+/// a valid `/5`. The second direction is the dangerous one — accepting an
+/// extra field at a frozen version is how a claim gets appended to signed
+/// history.
+///
+/// A null chain stays legal at every version that has the field. An
+/// unsigning camera, or one with no anchor configured, records the absence
+/// rather than an object full of nulls; that is an honest statement about
+/// what was established, not a defective record.
+fn device_chain_defect(chain: Option<&Value>, schema: &str) -> Option<String> {
+    let expected = device_chain_fields_for(schema)?;
+    let chain = chain?;
+    if chain.is_null() {
+        return None;
+    }
+    let Some(map) = chain.as_object() else {
+        return Some(format!(
+            "{schema} record's sensor_signature.device_chain is neither an object nor null"
+        ));
+    };
+    let mut missing: Vec<&str> = expected.iter().copied().filter(|f| !map.contains_key(*f)).collect();
+    let mut extra: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !expected.contains(k))
+        .collect();
+    if missing.is_empty() && extra.is_empty() {
+        return None;
+    }
+    missing.sort_unstable();
+    extra.sort_unstable();
+    Some(format!(
+        "{schema} record's sensor_signature.device_chain carries {} field(s), not the {} this \
+         version defines (missing: [{}]; unexpected: [{}]) — the field set is the schema one level \
+         deeper too, and at /5 versus /6 it is the only thing that tells them apart",
         map.len(),
         expected.len(),
         missing.join(", "),

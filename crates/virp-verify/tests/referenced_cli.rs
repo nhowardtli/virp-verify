@@ -239,6 +239,89 @@ fn a_bundle_with_no_referenced_section_says_nothing_about_the_property() {
 
 // --- the manifest is not trusted to say what is cited ----------------------
 
+/// A citation the exporter could not read is UNVERIFIABLE, not ABSENT.
+/// The bundle's silence about it is not evidence: nothing looked.
+#[test]
+fn an_eacces_citation_is_unverifiable_not_absent() {
+    let dir = scratch("ref-eacces");
+    std::fs::remove_file(dir.join(format!("artifacts/{SEQ24_SEGMENT}"))).unwrap();
+    let manifest = dir.join("manifest.json");
+    let mut value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let row = value["referenced_artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| r["sha256"] == SEQ24_SEGMENT)
+        .expect("the fixture cites the seq-24 segment");
+    let obj = row.as_object_mut().unwrap();
+    obj.remove("path");
+    obj.insert("present".to_owned(), serde_json::Value::Bool(false));
+    obj.insert("reason".to_owned(), serde_json::Value::String("eacces".to_owned()));
+    std::fs::write(&manifest, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let (code, out) = verify(&dir);
+    assert!(out.contains("referenced_artifact_binding UNVERIFIABLE"), "{out}");
+    assert!(!out.contains("referenced_artifact_binding ABSENT"), "{out}");
+    assert!(out.contains("INACCESSIBLE to the exporter"), "{out}");
+    assert!(out.contains("segment_seq 24"), "{out}");
+    // UNVERIFIABLE is soft: it does not fail the verdict, it withholds one.
+    assert_eq!(code, 0, "{out}");
+}
+
+/// The same row with the ordinary reason keeps the weaker word. The
+/// distinction is only worth having if not_found still grades ABSENT.
+#[test]
+fn a_not_found_citation_still_grades_absent() {
+    let dir = scratch("ref-notfound");
+    std::fs::remove_file(dir.join(format!("artifacts/{SEQ24_SEGMENT}"))).unwrap();
+    let manifest = dir.join("manifest.json");
+    let mut value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let row = value["referenced_artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| r["sha256"] == SEQ24_SEGMENT)
+        .unwrap();
+    let obj = row.as_object_mut().unwrap();
+    obj.remove("path");
+    obj.insert("present".to_owned(), serde_json::Value::Bool(false));
+    obj.insert("reason".to_owned(), serde_json::Value::String("not_found".to_owned()));
+    std::fs::write(&manifest, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let (code, out) = verify(&dir);
+    assert!(out.contains("referenced_artifact_binding ABSENT"), "{out}");
+    assert!(!out.contains("UNVERIFIABLE to the exporter"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// An unrecognised reason is not a known absence. Folding it into ABSENT
+/// would be the verifier guessing which of two different facts it saw.
+#[test]
+fn an_unknown_reason_is_unverifiable_and_quoted() {
+    let dir = scratch("ref-unknown-reason");
+    std::fs::remove_file(dir.join(format!("artifacts/{SEQ24_SEGMENT}"))).unwrap();
+    let manifest = dir.join("manifest.json");
+    let mut value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let row = value["referenced_artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| r["sha256"] == SEQ24_SEGMENT)
+        .unwrap();
+    let obj = row.as_object_mut().unwrap();
+    obj.remove("path");
+    obj.insert("present".to_owned(), serde_json::Value::Bool(false));
+    obj.insert(
+        "reason".to_owned(),
+        serde_json::Value::String("quota_exceeded".to_owned()),
+    );
+    std::fs::write(&manifest, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let (_, out) = verify(&dir);
+    assert!(out.contains("referenced_artifact_binding UNVERIFIABLE"), "{out}");
+    assert!(out.contains("quota_exceeded"), "{out}");
+}
+
 #[test]
 fn a_manifest_row_for_a_digest_no_record_cites_changes_nothing() {
     let dir = scratch("ref-extra-row");

@@ -1,0 +1,269 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=base.db)",
+  "created_at": "2026-09-04T20:36:53Z",
+  "sessions": [
+    {
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "path": "sessions/camera_axis-m3085v-b8a44fdd572c_2026-09-04.json"
+    }
+  ],
+  "keys": "keys.json",
+  "artifacts": [
+    {
+      "artifact_hash": "186692874aec1a42914e086220c3d1c9c7979f981581ba9605210f53d8304fda",
+      "path": "artifacts/186692874aec1a42914e086220c3d1c9c7979f981581ba9605210f53d8304fda"
+    },
+    {
+      "artifact_hash": "6191c1ba4b83a87e657a6b8a33fc5bf4fbcf8700aa6d9e9fb5aad7541aacf495",
+      "path": "artifacts/6191c1ba4b83a87e657a6b8a33fc5bf4fbcf8700aa6d9e9fb5aad7541aacf495"
+    },
+    {
+      "artifact_hash": "7a41210f624ae8a3afcbe8bccb8ad5f8ddcf414ac4680aeaca658beb1a1669ce",
+      "path": "artifacts/7a41210f624ae8a3afcbe8bccb8ad5f8ddcf414ac4680aeaca658beb1a1669ce"
+    },
+    {
+      "artifact_hash": "83e92ae4813256b5d1ed073168866b62c3f40b30ea792ab46954712355fbe466",
+      "path": "artifacts/83e92ae4813256b5d1ed073168866b62c3f40b30ea792ab46954712355fbe466"
+    },
+    {
+      "artifact_hash": "d489b652e6a27d6f6c675b2676f864f077e2d662859abfd91c56b7341662a50a",
+      "path": "artifacts/d489b652e6a27d6f6c675b2676f864f077e2d662859abfd91c56b7341662a50a"
+    },
+    {
+      "artifact_hash": "dc403ebab7626597d74493500073ac360ea39fbb4553199d8a1be651cb459f0e",
+      "path": "artifacts/dc403ebab7626597d74493500073ac360ea39fbb4553199d8a1be651cb459f0e"
+    },
+    {
+      "artifact_hash": "dc52a0c72b6ff2825dc40ca363142458604a918a77a4a71bac9c37b4072f87e8",
+      "path": "artifacts/dc52a0c72b6ff2825dc40ca363142458604a918a77a4a71bac9c37b4072f87e8"
+    },
+    {
+      "artifact_hash": "de0dd789d202ae6d8c9d9a9d6f312887a397ca6ba48a00be434efc6fd6d74b8a",
+      "path": "artifacts/de0dd789d202ae6d8c9d9a9d6f312887a397ca6ba48a00be434efc6fd6d74b8a"
+    },
+    {
+      "artifact_hash": "fc0a2a5ddd44f8443c7aec1fdab3860d3eb93748556eb7fe54db7aca2c454d24",
+      "path": "artifacts/fc0a2a5ddd44f8443c7aec1fdab3860d3eb93748556eb7fe54db7aca2c454d24"
+    }
+  ],
+  "referenced_artifacts": [
+    {
+      "sha256": "064c926587b08eb557dd3933c479320302d11245dbe7f2bcd9fe80789408070c",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 24,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/064c926587b08eb557dd3933c479320302d11245dbe7f2bcd9fe80789408070c"
+    },
+    {
+      "sha256": "0a0dba16edb231eb6de14ccf72cb473876a39c462a1e50efea5170b084641b27",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 20,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/0a0dba16edb231eb6de14ccf72cb473876a39c462a1e50efea5170b084641b27"
+    },
+    {
+      "sha256": "0aa3ad79034cb7cdde48bb4a8a199d60089681d5cf5f663a2ac8d8b0931ec4cd",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 20,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/0aa3ad79034cb7cdde48bb4a8a199d60089681d5cf5f663a2ac8d8b0931ec4cd"
+    },
+    {
+      "sha256": "1b2265d477d3e9f4ee9fd069aaff972fdb350e15e3552814a743a89041ca3ab2",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 22,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/1b2265d477d3e9f4ee9fd069aaff972fdb350e15e3552814a743a89041ca3ab2"
+    },
+    {
+      "sha256": "33a7cc6d19b5c0cbcc23390b457ee3a525bd4dd198ea9b1ac97959b5c9992571",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 26,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/33a7cc6d19b5c0cbcc23390b457ee3a525bd4dd198ea9b1ac97959b5c9992571"
+    },
+    {
+      "sha256": "3f2031e84aa69d135e5bf24782e51638407abed09de2655ecff73231cf20a48f",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 26,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/3f2031e84aa69d135e5bf24782e51638407abed09de2655ecff73231cf20a48f"
+    },
+    {
+      "sha256": "47eae2a4b02214b106f8d63247672cdee2b9af5b421eb9902830f1a191e5a6f4",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 23,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/47eae2a4b02214b106f8d63247672cdee2b9af5b421eb9902830f1a191e5a6f4"
+    },
+    {
+      "sha256": "553fb60681e07e88b0ed3c657bc7c0f4d6aa8cbaec3b446f5a414e389ecbf884",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 25,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/553fb60681e07e88b0ed3c657bc7c0f4d6aa8cbaec3b446f5a414e389ecbf884"
+    },
+    {
+      "sha256": "65fa8eb3684f9f2d2ee8c9d1bf11b340ac0f8678fe63bedca02b585d2e8e06c9",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 19,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/65fa8eb3684f9f2d2ee8c9d1bf11b340ac0f8678fe63bedca02b585d2e8e06c9"
+    },
+    {
+      "sha256": "77e87adfbb27c92f797f893782f4c43112d727f5b9c0a7e022a72c9aaeef6c3d",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 24,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/77e87adfbb27c92f797f893782f4c43112d727f5b9c0a7e022a72c9aaeef6c3d"
+    },
+    {
+      "sha256": "7eb2df971da000486f1f0886731705a607643e8aafb7d629e9738e7ed367404d",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 21,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/7eb2df971da000486f1f0886731705a607643e8aafb7d629e9738e7ed367404d"
+    },
+    {
+      "sha256": "90f7eef3d79f1996e68d1e1d2d5770c8d06367ec7e6f70bec60f4691af2c33ba",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 22,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/90f7eef3d79f1996e68d1e1d2d5770c8d06367ec7e6f70bec60f4691af2c33ba"
+    },
+    {
+      "sha256": "91d377a5ff7630f4970b5a1b3ed1212f7413314608314c4110838152b62c4a38",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 19,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/91d377a5ff7630f4970b5a1b3ed1212f7413314608314c4110838152b62c4a38"
+    },
+    {
+      "sha256": "96307cf1dd4f8468a5c59c904a941eeda0d42aaef5ffa2e69ccd31278b3e307b",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 27,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/96307cf1dd4f8468a5c59c904a941eeda0d42aaef5ffa2e69ccd31278b3e307b"
+    },
+    {
+      "sha256": "a8e25848b4c1c7291ccf39e25c831d6c31e62fa888cb2a7e9d93bd06b4ceb127",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 23,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/a8e25848b4c1c7291ccf39e25c831d6c31e62fa888cb2a7e9d93bd06b4ceb127"
+    },
+    {
+      "sha256": "cac149cd4671a4ee2549a34ca0833033646dcf3c908576dc80174b1dfd836818",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 21,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/cac149cd4671a4ee2549a34ca0833033646dcf3c908576dc80174b1dfd836818"
+    },
+    {
+      "sha256": "cd9093128840ab0102c95435395125bf8fd7e03f8388da7a90280766818ca768",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 25,
+          "field": "segment_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/cd9093128840ab0102c95435395125bf8fd7e03f8388da7a90280766818ca768"
+    },
+    {
+      "sha256": "dcca8ace8f737b725edb42f1d6e3b6808d69b108291be3d567e30198a433d649",
+      "cited_by": [
+        {
+          "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+          "segment_seq": 27,
+          "field": "sensor_signature.validator_output_sha256"
+        }
+      ],
+      "present": true,
+      "path": "artifacts/dcca8ace8f737b725edb42f1d6e3b6808d69b108291be3d567e30198a433d649"
+    }
+  ]
+}

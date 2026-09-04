@@ -37,8 +37,8 @@ use crate::producer::{grade_producer_signatures, ProducerSignerReport};
 use crate::seal::Seal;
 use crate::sig::PublicKey;
 use crate::verify::{
-    grade_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore, Keyring, SessionChain, SessionReport,
-    Status, Verdict,
+    grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
+    CarriedReferenced, Keyring, ReferencedCoverage, ReferencedStore, SessionChain, SessionReport, Status, Verdict,
 };
 
 pub const BUNDLE_VERSION: &str = "docket-bundle/0.1";
@@ -91,6 +91,47 @@ pub struct ManifestArtifact {
     pub path: String,
 }
 
+/// One REFERENCED artifact: a file a camera record cites BY DIGEST, rather
+/// than one the chain commits to as a body. There are two — the segment
+/// video (`segment_sha256`) and the validator's own output about it
+/// (`sensor_signature.validator_output_sha256`).
+///
+/// The whole row is the exporter's CLAIM and none of it is taken on faith.
+/// `sha256` is the digest the file is filed under and `path` says where the
+/// bytes sit; the grading re-derives which digests are actually cited from
+/// the carried BODIES, then recomputes SHA-256 over the file. A row citing a
+/// digest no record cites is ignored; a record citing a digest no row
+/// carries grades ABSENT.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestReferencedArtifact {
+    /// The cited digest — the value of the citing field inside the record.
+    /// The file is NAMED by this, not by its own hash, so an altered file is
+    /// found and graded FAILED instead of disappearing into ABSENT.
+    pub sha256: String,
+    /// Which record cites it, and through which field. Unsigned metadata
+    /// carried for a reader; grading never depends on it.
+    #[serde(default)]
+    pub cited_by: Vec<ReferencedCitation>,
+    /// Relative path to the bytes. Absent when `present` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Whether the exporter found the file. A cited artifact it could not
+    /// find is listed `false`, never omitted: "the bundle does not carry it"
+    /// and "the record cites nothing" must not read the same.
+    pub present: bool,
+}
+
+/// Which record cites a referenced artifact, and through which field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferencedCitation {
+    pub session_id: String,
+    #[serde(default)]
+    pub segment_seq: Option<i64>,
+    /// Field path inside the record: `segment_sha256`, or
+    /// `sensor_signature.validator_output_sha256`.
+    pub field: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Must be `docket-bundle/0.1`.
@@ -120,6 +161,13 @@ pub struct Manifest {
     /// graded and nothing in the report implies bodies exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Vec<ManifestArtifact>>,
+    /// The artifacts the camera records CITE, carried alongside the bodies
+    /// (exporter `--referenced-artifacts`). Absent in every bundle exported
+    /// before that flag existed, and absent means `referenced_artifact_binding`
+    /// grades ABSENT — the bundle does not carry what the check needs, which
+    /// is not a pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referenced_artifacts: Option<Vec<ManifestReferencedArtifact>>,
     /// Present when the exporter ran with `--redacted`: which bodies it
     /// withheld, and under which policy.
     ///
@@ -221,6 +269,11 @@ pub enum BundleError {
     MalformedArtifactHash(String),
     /// Two manifest artifact rows claim the same `artifact_hash`.
     DuplicateArtifact(String),
+    /// A manifest `referenced_artifacts[].sha256` label is not a 64-hex
+    /// digest.
+    MalformedReferencedDigest(String),
+    /// Two manifest referenced rows claim the same digest.
+    DuplicateReferencedArtifact(String),
     /// A carried body is referenced by no entry in the bundle: content
     /// nothing in the evidence commits to. Strict reading rejects it.
     UnreferencedArtifact(String),
@@ -310,6 +363,15 @@ impl std::fmt::Display for BundleError {
             Self::DuplicateArtifact(h) => {
                 write!(f, "manifest lists more than one artifact body for artifact_hash {h}")
             }
+            Self::MalformedReferencedDigest(h) => {
+                write!(
+                    f,
+                    "manifest referenced_artifacts entry claims sha256 {h:?}, which is not a 64-hex digest"
+                )
+            }
+            Self::DuplicateReferencedArtifact(h) => {
+                write!(f, "manifest lists more than one referenced artifact for sha256 {h}")
+            }
             Self::UnreferencedArtifact(h) => {
                 write!(
                     f,
@@ -384,6 +446,12 @@ pub struct Bundle {
     /// Carried artifact bodies keyed by claimed `artifact_hash`. `None` for
     /// a hash-only bundle (no `artifacts` key in the manifest).
     pub artifacts: Option<ArtifactStore>,
+    /// Referenced artifacts keyed by the CITED digest they are filed under,
+    /// each carrying the digest recomputed over the file at read time (or
+    /// `None` when the bundle carries no bytes for it). `None` for a bundle
+    /// with no `referenced_artifacts` key — every bundle exported before the
+    /// exporter could carry them.
+    pub referenced: Option<ReferencedStore>,
     /// SHA-256 of `manifest.json`'s exact bytes. Identifies this bundle in a
     /// report without naming the producer's filesystem: the manifest commits
     /// to every session path, every artifact hash and the key file, so two
@@ -575,6 +643,41 @@ fn read_capped(path: &Path, max: u64, what: &'static str) -> Result<Vec<u8>, Bun
         });
     }
     Ok(bytes)
+}
+
+/// SHA-256 over a file the reader must NOT hold in memory.
+///
+/// Referenced artifacts are video: a segment is orders of magnitude larger
+/// than a chain body, and a bundle of a day's footage is gigabytes. Only the
+/// digest is ever kept, so the ceiling here bounds hashing TIME rather than
+/// allocation — a hostile bundle cannot make the verifier read forever, and
+/// a legitimate one is never refused for being video-sized.
+fn sha256_file_capped(path: &Path, max: u64, what: &'static str) -> Result<(String, u64), BundleError> {
+    use std::io::Read as _;
+    let io = |source| BundleError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut hasher = crate::hash::Sha256Stream::new();
+    let mut buf = vec![0u8; 1 << 16];
+    let mut total = 0u64;
+    loop {
+        let n = file.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
+        if total > max {
+            return Err(BundleError::TooLarge {
+                path: path.to_owned(),
+                what,
+                max,
+            });
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok((hasher.finish_hex(), total))
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path, max: u64, what: &'static str) -> Result<T, BundleError> {
@@ -993,6 +1096,55 @@ impl Bundle {
             }
         };
 
+        // Referenced artifacts: the files the camera records CITE. Only the
+        // recomputed digest is kept — these are video, and holding them
+        // would make peak memory track the size of the evidence.
+        //
+        // Structural strictness only, as with bodies: a hex label, no
+        // duplicates. Whether the file hashes to the digest it is filed
+        // under is the grading's call, and a mismatch is FAILED, never
+        // "unreadable" — that mismatch is the entire reason to carry them.
+        let referenced = match &manifest.referenced_artifacts {
+            None => None,
+            Some(list) => {
+                let mut store = ReferencedStore::new();
+                let mut total = 0u64;
+                for mr in list {
+                    if !is_hex_digest_64(&mr.sha256) {
+                        return Err(BundleError::MalformedReferencedDigest(mr.sha256.clone()));
+                    }
+                    let carried = match (&mr.path, mr.present) {
+                        // Claimed present with somewhere to look: digest it.
+                        (Some(rel), true) => {
+                            let path = safe_join(root, rel)?;
+                            let (digest, len) =
+                                sha256_file_capped(&path, limits.referenced_artifact_bytes, "referenced artifact")?;
+                            total = total.saturating_add(len);
+                            if total > limits.referenced_artifact_bytes_total {
+                                return Err(BundleError::TooLarge {
+                                    path: root.to_owned(),
+                                    what: "referenced artifacts in total",
+                                    max: limits.referenced_artifact_bytes_total,
+                                });
+                            }
+                            Some(CarriedReferenced {
+                                path: rel.clone(),
+                                sha256: digest,
+                                bytes: len,
+                            })
+                        }
+                        // present=false, or present with no path to read:
+                        // the bundle does not put bytes in front of anyone.
+                        _ => None,
+                    };
+                    if store.insert(mr.sha256.clone(), carried).is_some() {
+                        return Err(BundleError::DuplicateReferencedArtifact(mr.sha256.clone()));
+                    }
+                }
+                Some(store)
+            }
+        };
+
         Ok(Bundle {
             root: root.to_owned(),
             manifest,
@@ -1002,6 +1154,7 @@ impl Bundle {
             seal_bytes,
             seal_signature,
             artifacts,
+            referenced,
             manifest_sha256,
         })
     }
@@ -1059,6 +1212,17 @@ impl Bundle {
                     (Some(status), Some(coverage))
                 }
             };
+            let (referenced_artifact_binding, referenced_coverage) = match &self.manifest.referenced_artifacts {
+                // No section at all: say nothing rather than grade nothing.
+                // Every bundle exported before the exporter could carry
+                // these has no section, and must serialize unchanged.
+                None => (None, None),
+                Some(_) => {
+                    let (status, coverage) =
+                        grade_referenced_artifact_binding(chain, self.artifacts.as_ref(), self.referenced.as_ref());
+                    (Some(status), Some(coverage))
+                }
+            };
             let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
             let sensor = summarise_sensor(chain, self.artifacts.as_ref());
             let producer = grade_producer_signatures(chain, self.artifacts.as_ref(), producer_keys);
@@ -1067,6 +1231,8 @@ impl Bundle {
                 seal_head_match,
                 artifact_binding,
                 artifact_coverage,
+                referenced_artifact_binding,
+                referenced_coverage,
                 producer,
                 capture_completeness,
                 sensor,
@@ -1191,6 +1357,18 @@ pub struct SessionOutcome {
     /// Present alongside `artifact_binding`: per-entry body coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_coverage: Option<ArtifactCoverage>,
+    /// Present only when the manifest carries a `referenced_artifacts`
+    /// section: does every artifact the camera records CITE by digest travel
+    /// with the bundle, and hash to what the record commits to? A different
+    /// question from `artifact_binding`, which is about the record itself —
+    /// this one is about the bytes the record is ABOUT. ABSENT when a
+    /// citation's file is not carried, and ABSENT is never a pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referenced_artifact_binding: Option<Status>,
+    /// Present alongside `referenced_artifact_binding`: per-citation
+    /// coverage, naming every mismatch and every absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referenced_coverage: Option<ReferencedCoverage>,
     /// Producer-signature result: did the CAPTURE HOST's own key sign the
     /// carried camera records? A third distinct result beside chain-signature
     /// validity and signer trust — the O-Node chain key must never stand in
@@ -1258,6 +1436,24 @@ pub struct BoundaryReport {
     /// per-session grades restated. See [`CaptureReport`] on each session
     /// for the outage/overlap detail.
     pub capture_completeness: CaptureSummary,
+    /// Are the bytes the camera records were written ABOUT carried here, and
+    /// do they still hash to what the records commit to? A boundary question
+    /// because for every bundle before the exporter could carry them the
+    /// answer is ABSENT — the evidence does not contain what the check
+    /// needs. Deliberately NOT folded into `source_device_established`:
+    /// this is about bytes, that is about identity, and a verified payload
+    /// still proves nothing about which physical camera produced it.
+    /// Omitted from a report whose bundle has no referenced_artifacts
+    /// section, so pre-feature reports serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referenced_artifact_binding: Option<ReferencedSummary>,
+}
+
+/// The weakest per-session `referenced_artifact_binding`, with counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferencedSummary {
+    pub status: Status,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1402,6 +1598,45 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             reason: "the bundle contains no sessions".to_owned(),
         });
     let groups = capture_groups(sessions);
+
+    // Weakest link across sessions, and the ranking says the point: FAILED
+    // outranks ABSENT outranks VERIFIED. A bundle that verifies eight
+    // citations and carries none for the ninth is not a verified bundle.
+    let referenced_artifact_binding = if sessions.iter().all(|s| s.referenced_artifact_binding.is_none()) {
+        None
+    } else {
+        let rank = |st: &Status| match st {
+            Status::Failed { .. } => 2,
+            Status::Verified => 0,
+            _ => 1,
+        };
+        let worst = sessions
+            .iter()
+            .filter_map(|s| s.referenced_artifact_binding.as_ref())
+            .max_by_key(|st| rank(st))
+            .cloned()
+            .unwrap_or(Status::Absent);
+        let (citations, verified, absent, failed) = sessions
+            .iter()
+            .filter_map(|s| s.referenced_coverage.as_ref())
+            .fold((0, 0, 0, 0), |a, c| {
+                (a.0 + c.citations, a.1 + c.verified, a.2 + c.absent, a.3 + c.failed)
+            });
+        let detail = if citations == 0 {
+            "no camera record in this bundle cites an artifact by digest".to_owned()
+        } else {
+            let mut d = format!("{verified} of {citations} cited artifact(s) recomputed and matching");
+            if absent > 0 {
+                d.push_str(&format!("; {absent} not carried — ABSENT, not a pass"));
+            }
+            if failed > 0 {
+                d.push_str(&format!("; {failed} carried and hashing to something else"));
+            }
+            d
+        };
+        Some(ReferencedSummary { status: worst, detail })
+    };
+
     BoundaryReport {
         source_device_established: SourceDeviceReport {
             answer: SourceDeviceAnswer::No,
@@ -1412,6 +1647,7 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             detail: groups.join("; "),
             groups,
         },
+        referenced_artifact_binding,
     }
 }
 
@@ -1494,6 +1730,13 @@ fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> V
         s.report.verdict == Verdict::Failed
             || s.seal_head_match.as_ref().is_some_and(Status::is_failed)
             || s.artifact_binding.as_ref().is_some_and(Status::is_failed)
+            // A carried file that does not hash to what a producer-signed
+            // record commits to is cryptographic inconsistency, the same
+            // kind artifact_binding fails on — so it fails the verdict the
+            // same way. ABSENT never does: a bundle that does not carry the
+            // referenced artifacts is not a wrong bundle, and every bundle
+            // exported before the exporter could carry them is ABSENT.
+            || s.referenced_artifact_binding.as_ref().is_some_and(Status::is_failed)
     });
     if any_failed || seal_failed {
         return Verdict::Failed;

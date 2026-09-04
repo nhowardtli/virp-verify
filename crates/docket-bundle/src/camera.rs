@@ -976,6 +976,52 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
 /// Distinct `camera_id` values the carried camera records claim, across one
 /// session. What the SIGNED PRODUCER says the source was — a claim the
 /// boundary result names and does not endorse.
+/// The field path of the segment-video citation.
+pub const CITED_SEGMENT: &str = "segment_sha256";
+/// The field path of the validator-output citation.
+pub const CITED_VALIDATOR_OUTPUT: &str = "sensor_signature.validator_output_sha256";
+
+/// Every artifact this camera record cites BY DIGEST, as (field path,
+/// digest), in a stable order.
+///
+/// The field paths are the producer's own vocabulary — `virp_camera.py`
+/// names the same two artifacts the same way on its SEGMENT PAYLOAD axis —
+/// deliberately, so an examiner holding both reports can line them up
+/// instead of having to work out that two spellings mean one file.
+///
+/// Structural only: a value that is not a 64-hex digest is not a citation
+/// this acts on. Whether the sensor object is well formed at its own schema
+/// version is [`sensor_field_defect`]'s judgement and is graded separately;
+/// reading a digest out of a malformed object would be over-reading, and
+/// missing a citation is the safe direction — it grades ABSENT, never a
+/// pass.
+pub fn cited_digests(body: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let is_camera = body
+        .get("schema")
+        .and_then(Value::as_str)
+        .is_some_and(|s| s.starts_with("camera_segment/"));
+    if !is_camera {
+        return out;
+    }
+    if let Some(seg) = body.get(CITED_SEGMENT).and_then(Value::as_str) {
+        if crate::hash::is_hex_digest_64(seg) {
+            out.push((CITED_SEGMENT.to_owned(), seg.to_owned()));
+        }
+    }
+    if let Some(vo) = body
+        .get("sensor_signature")
+        .and_then(Value::as_object)
+        .and_then(|s| s.get("validator_output_sha256"))
+        .and_then(Value::as_str)
+    {
+        if crate::hash::is_hex_digest_64(vo) {
+            out.push((CITED_VALIDATOR_OUTPUT.to_owned(), vo.to_owned()));
+        }
+    }
+    out
+}
+
 pub fn claimed_camera_ids(chain: &SessionChain, store: Option<&ArtifactStore>) -> Vec<String> {
     let Some(store) = store else { return Vec::new() };
     let mut ids: Vec<String> = Vec::new();

@@ -22,11 +22,13 @@ pub mod verify;
 
 pub use bundle::{
     bundle_display_name, read_key_file, validate_session_input, BoundaryReport, Bundle, BundleError, BundleReport,
-    CaptureSummary, RedactedEntry, Redaction, RedactionAudit, SourceDeviceAnswer, SourceDeviceReport, REPORT_VERSION,
+    CaptureSummary, ManifestReferencedArtifact, RedactedEntry, Redaction, RedactionAudit, ReferencedCitation,
+    ReferencedSummary, SourceDeviceAnswer, SourceDeviceReport, REPORT_VERSION,
 };
 pub use camera::{
-    claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage, CaptureOverlap,
-    CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, SENSOR_CAPTION,
+    cited_digests, claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage,
+    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_SEGMENT,
+    CITED_VALIDATOR_OUTPUT, SENSOR_CAPTION,
 };
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
@@ -36,8 +38,10 @@ pub use producer::{canonical_json_bytes, grade_producer_signatures, read_produce
 pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{
-    grade_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore, ChainEntry, ChainHead, DetachedSignature,
-    Keyring, PropertyReport, SessionChain, SessionReport, SignerReport, SignerTrust, Status, TrustSource, Verdict,
+    grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
+    CarriedReferenced, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, ReferencedCoverage,
+    ReferencedDefect, ReferencedStore, SessionChain, SessionReport, SignerReport, SignerTrust, Status, TrustSource,
+    Verdict,
 };
 
 /// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).

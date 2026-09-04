@@ -1,0 +1,205 @@
+{
+  "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+  "entries": [
+    {
+      "artifact_hash": "de0dd789d202ae6d8c9d9a9d6f312887a397ca6ba48a00be434efc6fd6d74b8a",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:19:1788483057219358733",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10080764909116,
+      "previous_entry_hash": "f3ad7c6b791aae0aced45234922af89c4639e66e615dc6a69c4be15450cbb53c",
+      "sequence": 0,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483088460034576,
+      "chain_entry_hash": "818f914236938579652a2ed8da1e98b30f38c5421b053abbad3346ac2bbfd37c",
+      "chain_hmac": "4b67100a001f2dd6cd3d5fa69ac434b1804bcd8b83449ece527a7a3259dc610a",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "2ed6c4ed8fd2945b8e4c4363b6bcff086a44f83a4b80410906c3cd4e5cec7687cb1559e6ca99e41b15f26bcf74f7828b82edba48ef52b50839931856317edc08"
+      }
+    },
+    {
+      "artifact_hash": "83e92ae4813256b5d1ed073168866b62c3f40b30ea792ab46954712355fbe466",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:20:1788483063613418040",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10080787457315,
+      "previous_entry_hash": "818f914236938579652a2ed8da1e98b30f38c5421b053abbad3346ac2bbfd37c",
+      "sequence": 1,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483088482582779,
+      "chain_entry_hash": "e61ba8a285bb962ec1bdd9439bb6b4850e4b52ed1753479d55e2997743650f79",
+      "chain_hmac": "71f868537097d2266a0572982653802226e92fa5f79395838df057505d2029a8",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "d37cd1653ac52c0dd08c16b1b16e238963d5824ebca0db2f3eb8c890fc421e20b328fa97bf84d634f76c49f0e1c5af4aa5ba7536a6412fe468982224fee90e0a"
+      }
+    },
+    {
+      "artifact_hash": "6191c1ba4b83a87e657a6b8a33fc5bf4fbcf8700aa6d9e9fb5aad7541aacf495",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:21:1788483068942467262",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10080810413937,
+      "previous_entry_hash": "e61ba8a285bb962ec1bdd9439bb6b4850e4b52ed1753479d55e2997743650f79",
+      "sequence": 2,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483088505539393,
+      "chain_entry_hash": "547880fd01722da0faf5e81db7e8171bad6b315e747bc9a76bd472ac4c4b3456",
+      "chain_hmac": "c2e58badb29a18e74368f50fc59000b104b1b288afa4488573f956ef23640a7e",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "f00873dda4a16fa4f950cb75d2b8b2ad10bcd7bc5ae437ea09885bd0ad90fc80e91086eacaedc20cf881b694359f6c5153d5d29215adf7634d0c4d7672436006"
+      }
+    },
+    {
+      "artifact_hash": "186692874aec1a42914e086220c3d1c9c7979f981581ba9605210f53d8304fda",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:22:1788483075335526064",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10080832336100,
+      "previous_entry_hash": "547880fd01722da0faf5e81db7e8171bad6b315e747bc9a76bd472ac4c4b3456",
+      "sequence": 3,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483088527461557,
+      "chain_entry_hash": "4b57c1c5b40df373490acf55beb540826379c1b5ae5e420dc7b983dca6f55e64",
+      "chain_hmac": "c63340babf96403070297d7de2cb9d05ef8f741af787ff961951cbb07a670bec",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "1b891f5bf5fa0c002c6b18aaa3c16c065633c5aeffa08850674fb7471014cd801d2543cd882fc7a4ccf75bcd8c1a32e9168b71f853c70c2432b009c023310709"
+      }
+    },
+    {
+      "artifact_hash": "7a41210f624ae8a3afcbe8bccb8ad5f8ddcf414ac4680aeaca658beb1a1669ce",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:23:1788483080296571512",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10080853606506,
+      "previous_entry_hash": "4b57c1c5b40df373490acf55beb540826379c1b5ae5e420dc7b983dca6f55e64",
+      "sequence": 4,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483088548731975,
+      "chain_entry_hash": "02cb60d3e4640ff7ffeef7179e70ffce67f69fc9ca24b70ea7f0a08c1579db0f",
+      "chain_hmac": "da3ba650a4aaf20c29e34f9f2a1fc95ec5371fb5e2336600a208c7aca8fed576",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "15836595c85f07ec0f825742c451ff7299f8aac07e5d965da18e895aadf30d8ddb515c5d00151daf8486fb0f8e5518d18bce2295f19d0b490f104c48bced3902"
+      }
+    },
+    {
+      "artifact_hash": "d489b652e6a27d6f6c675b2676f864f077e2d662859abfd91c56b7341662a50a",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:24:1788483475724792399",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10495707874380,
+      "previous_entry_hash": "02cb60d3e4640ff7ffeef7179e70ffce67f69fc9ca24b70ea7f0a08c1579db0f",
+      "sequence": 5,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483503402999847,
+      "chain_entry_hash": "6995f6aac162b5ea1b09dfd98fb86185fb659589b96b5f1b29468d42238240bd",
+      "chain_hmac": "ba806f80ef2fbef3add5703c40b2b001000b67b3fa0a04f104381a034f3f95c6",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "8a1f6adb7202dedda84185ea9b7cf4deb63ef96816911151e16a131808e58f1d4bbf830df3b3bc0dcf1ae78d6a268422ca9e4bc72cf4562562c95062c6523005"
+      }
+    },
+    {
+      "artifact_hash": "fc0a2a5ddd44f8443c7aec1fdab3860d3eb93748556eb7fe54db7aca2c454d24",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:25:1788483482118839475",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10495730986218,
+      "previous_entry_hash": "6995f6aac162b5ea1b09dfd98fb86185fb659589b96b5f1b29468d42238240bd",
+      "sequence": 6,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483503426111700,
+      "chain_entry_hash": "edcb23f9f6ec74f17730443d007f4c62e93b2cd2edb709abf76c785c3ab48a01",
+      "chain_hmac": "ab2d6e5d4961ef9107330e9fb6c9c6b0212402bf2f0724eb285803f05366dab5",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "b2ff4bf33d8073856e3fe11be312101dc428fe078513999f0bd465f273f89e36777b542b03c3a5758ea7b70d93bbdcfe5a280ac857c0e7f76acb957eb130cc0a"
+      }
+    },
+    {
+      "artifact_hash": "dc403ebab7626597d74493500073ac360ea39fbb4553199d8a1be651cb459f0e",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:26:1788483487446878611",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10495754207269,
+      "previous_entry_hash": "edcb23f9f6ec74f17730443d007f4c62e93b2cd2edb709abf76c785c3ab48a01",
+      "sequence": 7,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483503449332751,
+      "chain_entry_hash": "746cb41a1ff3a1828d2966788925135c4e386cc9f6822e327f1baa0d2f51936b",
+      "chain_hmac": "b24aef1b99ce50ee7516c701be7c7a4b9500eb9d16fda725e666e4652c840c03",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "31bfac628c8422d88759cece1b22a8d653bc7e20f2ef695ff26bf644df539738ce2cef0ac4daab0da269013218d4f536d78802e8a2480244d46cfc642c6e6b0a"
+      }
+    },
+    {
+      "artifact_hash": "dc52a0c72b6ff2825dc40ca363142458604a918a77a4a71bac9c37b4072f87e8",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camseg:axis-m3085v-b8a44fdd572c:27:1788483493073919854",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 10495776662028,
+      "previous_entry_hash": "746cb41a1ff3a1828d2966788925135c4e386cc9f6822e327f1baa0d2f51936b",
+      "sequence": 8,
+      "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788483503471787492,
+      "chain_entry_hash": "b7ef831f4540e1b93cc1a44fca77cc559741282c4a2f4442eb49469578c3ea85",
+      "chain_hmac": "05a874bdee20157d6da3aa9fe966439d50ba4578a0a723b991fb6d0e55bd9c33",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "d24af20899d5fdb43753b16f04279161efb8f28e4899b18f047d93a16620bf27d0f0a4fea0ca85fdd127a07da950dec8b24324ec72a67c92af9352e522766101"
+      }
+    }
+  ],
+  "head": {
+    "session_id": "camera:axis-m3085v-b8a44fdd572c:2026-09-04",
+    "last_sequence": 8,
+    "last_entry_hash": "b7ef831f4540e1b93cc1a44fca77cc559741282c4a2f4442eb49469578c3ea85",
+    "head_hmac": "53c8dfc4b36b61c8507bed388d62b9bb6767576dfe0d113b303d2be65ef4b8f1",
+    "signature": {
+      "signature_scheme": "ed25519-detached-v1",
+      "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+      "signature_hex": "248492eb3209185f061822428f478ae80d9278e99887b5b07ddff1d2399ce7ee35ba1cff0ac8986bb728a476e0cc26e46fedf824f59464965e643ccb0c64db09"
+    }
+  }
+}

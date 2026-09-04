@@ -610,6 +610,43 @@ class ExportAndVerify(unittest.TestCase):
         self.assertIn("sequence=2", r.stderr)
         self.assertIn("'signer_org_id' is NULL", r.stderr)
 
+    def test_a_non_empty_wal_is_refused_not_silently_dropped(self):
+        """immutable=1 IGNORES the write-ahead log. Measured 2026-09-04: a
+        live chain with a 4.2 MB WAL exported fifteen entries instead of
+        twenty, and the bundle looked complete — every hash and signature
+        verified, and the five missing records left no hole to find."""
+        db = self.out("wal.db")
+        build_fixture_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE scratch (x TEXT)")
+        conn.execute("INSERT INTO scratch VALUES ('uncheckpointed')")
+        conn.commit()
+        self.assertGreater(os.path.getsize(db + "-wal"), 0, "fixture needs a live WAL")
+        r = run_export("--db", db, "--out", self.out("from-wal"), "--sessions", SYNTHETIC_SESSION)
+        conn.close()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("non-empty write-ahead log", r.stderr)
+        self.assertIn("IGNORES the WAL", r.stderr)
+        # it must say which it did, and it refuses rather than writing to
+        # the operator's source database
+        self.assertIn("Refusing rather than exporting an undercount", r.stderr)
+        self.assertIn("wal_checkpoint(TRUNCATE)", r.stderr)
+        self.assertFalse(os.path.exists(self.out("from-wal")))
+
+    def test_a_checkpointed_wal_exports_normally(self):
+        db = self.out("ckpt.db")
+        build_fixture_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE scratch (x TEXT)")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+        conn.close()
+        r = run_export("--db", db, "--out", self.out("from-ckpt"), "--sessions", SYNTHETIC_SESSION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_stdlib_only(self):
         with open(EXPORT) as f:
             src = f.read()
@@ -1393,7 +1430,7 @@ REF_CAMERA = "cam-ref"
 REF_SESSION = SYNTHETIC_SESSION
 
 
-def camera_body(seq, video, validation, prev=None):
+def camera_body(seq, video, validation, prev=None, leaf=b""):
     """A camera_segment/5 body citing exactly the two artifacts this feature
     carries. Canonical single-line JSON, the way the driver serializes."""
     body = {
@@ -1409,13 +1446,20 @@ def camera_body(seq, video, validation, prev=None):
         "mode": "live",
         "prev_segment_sha256": prev,
         "producer_key_id": "0" * 32,
-        "schema": "camera_segment/5",
+        "schema": "camera_segment/6",
         "segment_seq": seq,
         "segment_sha256": sha256_hex(video),
         "sensor_signature": {
             "asserted_first_frame": "Fri 2026-09-04 00:00:00 GMT",
             "asserted_last_frame": "Fri 2026-09-04 00:00:06 GMT",
-            "device_chain": None,
+            "device_chain": {
+                "anchor": "intermediate_pinned",
+                "anchor_sha256": sha256_hex(b"anchor"),
+                "chain_to_anchor_verified": True,
+                "leaf_not_after": "2033-10-22T20:22:29Z",
+                "leaf_serial_matches_device": True,
+                "leaf_sha256": sha256_hex(leaf),
+            },
             "device_firmware": "12.5.68",
             "device_serial": "TESTSERIAL01",
             "gops_invalid": 0,
@@ -1461,15 +1505,19 @@ class ReferencedArtifacts(unittest.TestCase):
         os.makedirs(self.outbox)
         self.videos = [b"video-%d" % i + b"\x00" * 32 for i in range(3)]
         self.validations = [b"VIDEO IS VALID!\nsegment %d\n" % i for i in range(3)]
+        # One leaf certificate for the whole camera, as in reality: the same
+        # device signs every segment, so every record cites the same DER.
+        self.leaf = b"\x30\x82DER-leaf-certificate-bytes"
         bodies, prev = [], None
         for i, (v, val) in enumerate(zip(self.videos, self.validations)):
-            bodies.append(camera_body(i, v, val, prev))
+            bodies.append(camera_body(i, v, val, prev, leaf=self.leaf))
             prev = sha256_hex(v)
         build_referenced_db(self.db, bodies)
         self.db_sha = sha256_file(self.db)
         for i, (v, val) in enumerate(zip(self.videos, self.validations)):
             self._write("%s.%06d.%s.mp4" % (REF_CAMERA, i, sha256_hex(v)), v)
             self._write("%s.%06d.%s.validation.txt" % (REF_CAMERA, i, sha256_hex(v)), val)
+            self._write("%s.%06d.%s.leaf.der" % (REF_CAMERA, i, sha256_hex(v)), self.leaf)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -1477,6 +1525,11 @@ class ReferencedArtifacts(unittest.TestCase):
     def _write(self, name, data, where=None):
         with open(os.path.join(where or self.outbox, name), "wb") as f:
             f.write(data)
+
+    def _restore(self, path, mode):
+        """chmod back, tolerating tearDown having already removed the tree
+        (addCleanup runs after tearDown, not before)."""
+        self.addCleanup(lambda: os.path.exists(path) and os.chmod(path, mode))
 
     def out(self, name):
         return os.path.join(self.tmp, name)
@@ -1496,9 +1549,9 @@ class ReferencedArtifacts(unittest.TestCase):
     def test_every_cited_artifact_is_carried_and_listed(self):
         out, stdout, manifest = self.export("bundle")
         ref = manifest["referenced_artifacts"]
-        self.assertEqual(len(ref), 6)                  # 3 records x 2 citations
+        self.assertEqual(len(ref), 7)   # 3 segments + 3 validator outputs + 1 shared leaf
         self.assertTrue(all(r["present"] for r in ref))
-        self.assertIn("referenced artifacts: 6 cited by the carried camera records; 6 carried, 0 not found", stdout)
+        self.assertIn("referenced artifacts: 7 cited by the carried camera records; 7 carried, 0 not found", stdout)
         self.assertEqual(sha256_file(self.db), self.db_sha)
         for v, val in zip(self.videos, self.validations):
             for data in (v, val):
@@ -1525,6 +1578,7 @@ class ReferencedArtifacts(unittest.TestCase):
             self._write("%s.mp4" % sha256_hex(v), v, where=alt)
         for val in self.validations:
             self._write("%s.txt" % sha256_hex(val), val, where=alt)
+        self._write("%s.der" % sha256_hex(self.leaf), self.leaf, where=alt)
         _, _, manifest = self.export("cas-bundle", dirs=[alt])
         self.assertTrue(all(r["present"] for r in manifest["referenced_artifacts"]))
 
@@ -1559,12 +1613,12 @@ class ReferencedArtifacts(unittest.TestCase):
             self.outbox, "%s.%06d.%s.validation.txt" % (REF_CAMERA, 2, sha256_hex(self.videos[2]))))
         out, stdout, manifest = self.export("partial")
         ref = manifest["referenced_artifacts"]
-        self.assertEqual(len(ref), 6)                  # still six: nothing omitted
+        self.assertEqual(len(ref), 7)                  # still seven: nothing omitted
         missing = [r for r in ref if not r["present"]]
         self.assertEqual(len(missing), 1)
         self.assertEqual(missing[0]["sha256"], sha256_hex(self.validations[2]))
         self.assertNotIn("path", missing[0])
-        self.assertIn("5 carried, 1 not found", stdout)
+        self.assertIn("6 carried, 1 not found", stdout)
         self.assertIn("NOT FOUND", stdout)
         self.assertFalse(os.path.exists(
             os.path.join(out, "artifacts", sha256_hex(self.validations[2]))))
@@ -1574,9 +1628,52 @@ class ReferencedArtifacts(unittest.TestCase):
         os.makedirs(empty)
         _, stdout, manifest = self.export("none", dirs=[empty])
         ref = manifest["referenced_artifacts"]
-        self.assertEqual(len(ref), 6)
+        self.assertEqual(len(ref), 7)
         self.assertFalse(any(r["present"] for r in ref))
-        self.assertIn("0 carried, 6 not found", stdout)
+        self.assertIn("0 carried, 7 not found", stdout)
+
+    # --- inaccessible is not absent --------------------------------------
+
+    def test_an_unreadable_directory_is_eacces_never_not_found(self):
+        """chmod 000. glob() cannot tell an unreadable directory from an
+        empty one, so the exporter used to write a manifest declaring
+        every artifact missing after never being allowed to look."""
+        os.chmod(self.outbox, 0o000)
+        self._restore(self.outbox, 0o700)
+        if os.access(self.outbox, os.R_OK):
+            self.skipTest("running as root: chmod 000 does not deny access")
+        _, stdout, manifest = self.export("blocked")
+        ref = manifest["referenced_artifacts"]
+        self.assertTrue(all(not r["present"] for r in ref))
+        self.assertTrue(all(r["reason"] == "eacces" for r in ref), ref)
+        self.assertIn("INACCESSIBLE", stdout)
+        self.assertIn("their absence from this bundle is not evidence", stdout)
+
+    def test_an_unreadable_file_is_eacces_not_not_found(self):
+        target = os.path.join(
+            self.outbox, "%s.%06d.%s.mp4" % (REF_CAMERA, 1, sha256_hex(self.videos[1])))
+        os.chmod(target, 0o000)
+        self._restore(target, 0o600)
+        if os.access(target, os.R_OK):
+            self.skipTest("running as root: chmod 000 does not deny access")
+        _, _, manifest = self.export("blocked-file")
+        row = next(r for r in manifest["referenced_artifacts"]
+                   if r["sha256"] == sha256_hex(self.videos[1]))
+        self.assertFalse(row["present"])
+        self.assertEqual(row["reason"], "eacces")
+
+    def test_a_genuinely_missing_file_still_reads_not_found(self):
+        """The other half: the distinction is only worth having if the
+        ordinary absence keeps its own, weaker, word."""
+        os.remove(os.path.join(
+            self.outbox, "%s.%06d.%s.validation.txt" % (REF_CAMERA, 2, sha256_hex(self.videos[2]))))
+        _, stdout, manifest = self.export("plain-missing")
+        row = next(r for r in manifest["referenced_artifacts"]
+                   if r["sha256"] == sha256_hex(self.validations[2]))
+        self.assertEqual(row["reason"], "not_found")
+        self.assertIn("NOT FOUND", stdout)
+        self.assertIn("0 INACCESSIBLE", stdout)     # counted, none of them
+        self.assertNotIn("    INACCESSIBLE", stdout)
 
     # --- the flag's own edges --------------------------------------------
 
@@ -1602,19 +1699,31 @@ class ReferencedArtifacts(unittest.TestCase):
 
     # --- citation extraction ---------------------------------------------
 
-    def test_cited_digests_reads_both_fields_and_only_camera_records(self):
-        body = json.loads(camera_body(0, self.videos[0], self.validations[0]))
+    def test_cited_digests_reads_all_three_fields_and_only_camera_records(self):
+        body = json.loads(camera_body(0, self.videos[0], self.validations[0],
+                                      leaf=self.leaf))
         cited = export_bundle.cited_digests(body)
         self.assertEqual(
             cited,
             {"segment_sha256": sha256_hex(self.videos[0]),
-             "sensor_signature.validator_output_sha256": sha256_hex(self.validations[0])},
+             "sensor_signature.validator_output_sha256": sha256_hex(self.validations[0]),
+             "sensor_signature.device_chain.leaf_sha256": sha256_hex(self.leaf)},
         )
         self.assertEqual(export_bundle.cited_digests({"schema": "observation/1"}), {})
         self.assertEqual(export_bundle.cited_digests({}), {})
 
-    def test_a_non_hex_citation_is_not_acted_on(self):
+    def test_a_record_with_no_device_chain_cites_no_leaf(self):
+        """/3 and /4 records, and any camera that presents no chain: the
+        leaf citation is absent, not null, and nothing looks for a file."""
         body = json.loads(camera_body(0, self.videos[0], self.validations[0]))
+        body["sensor_signature"]["device_chain"] = None
+        self.assertNotIn("sensor_signature.device_chain.leaf_sha256",
+                         export_bundle.cited_digests(body))
+
+    def test_a_non_hex_citation_is_not_acted_on(self):
+        body = json.loads(camera_body(0, self.videos[0], self.validations[0],
+                                      leaf=self.leaf))
         body["segment_sha256"] = "../../etc/passwd"
         body["sensor_signature"]["validator_output_sha256"] = "NOT-A-DIGEST"
+        body["sensor_signature"]["device_chain"]["leaf_sha256"] = "../../../leaf"
         self.assertEqual(export_bundle.cited_digests(body), {})

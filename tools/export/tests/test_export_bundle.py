@@ -616,8 +616,8 @@ class ExportAndVerify(unittest.TestCase):
         imports = {line.split()[1] for line in src.splitlines() if line.startswith(("import ", "from "))}
         self.assertEqual(
             imports,
-            {"argparse", "base64", "binascii", "datetime", "hashlib", "json", "os", "re", "sqlite3", "sys",
-             "urllib.parse"},
+            {"argparse", "base64", "binascii", "datetime", "glob", "hashlib", "json", "os", "re", "sqlite3",
+             "sys", "urllib.parse"},
         )
 
 
@@ -1380,3 +1380,241 @@ class ReferenceBundleGate(unittest.TestCase):
                     self.assertNotIn("INCONSISTENT", text_r)
         if ran == 0:
             self.skipTest("no reference bundle + source snapshot pair present on this machine")
+
+
+# --- referenced artifacts (--referenced-artifacts) --------------------------
+#
+# The files a camera record CITES by digest: the segment video, and the
+# validator's own output about it. They have never travelled in a bundle, and
+# the 2026-09-04 tamper pass measured what that costs — a byte flipped in
+# either survived both verifiers with byte-identical output.
+
+REF_CAMERA = "cam-ref"
+REF_SESSION = SYNTHETIC_SESSION
+
+
+def camera_body(seq, video, validation, prev=None):
+    """A camera_segment/5 body citing exactly the two artifacts this feature
+    carries. Canonical single-line JSON, the way the driver serializes."""
+    body = {
+        "byte_len": len(video),
+        "camera_id": REF_CAMERA,
+        "capture_end_utc_ns": 1_787_000_000_000_000_000 + (seq + 1) * 6_000_000_000,
+        "capture_policy": {"jitter_s": 1.5, "max_unexplained_gap_s": 0.0, "nominal_segment_s": 6.0},
+        "capture_start_utc_ns": 1_787_000_000_000_000_000 + seq * 6_000_000_000,
+        "device": REF_CAMERA,
+        "duration_s": 6.0,
+        "encoder": "copy",
+        "gap": None,
+        "mode": "live",
+        "prev_segment_sha256": prev,
+        "producer_key_id": "0" * 32,
+        "schema": "camera_segment/5",
+        "segment_seq": seq,
+        "segment_sha256": sha256_hex(video),
+        "sensor_signature": {
+            "asserted_first_frame": "Fri 2026-09-04 00:00:00 GMT",
+            "asserted_last_frame": "Fri 2026-09-04 00:00:06 GMT",
+            "device_chain": None,
+            "device_firmware": "12.5.68",
+            "device_serial": "TESTSERIAL01",
+            "gops_invalid": 0,
+            "gops_unsigned": 0,
+            "gops_valid": 4,
+            "gops_valid_with_missing": 0,
+            "public_key": "VALID",
+            "public_key_pin": "MATCH",
+            "sensor_key_sha256": sha256_hex(b"sensor-key"),
+            "validator": {"name": "signed-video-framework", "version": "2.3.10"},
+            "validator_output_sha256": sha256_hex(validation),
+            "vendor": "axis",
+            "verdict": "VALID",
+        },
+        "time_source": "host-clock",
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def build_referenced_db(path, bodies):
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.executescript(ARTIFACTS_SCHEMA)
+    entries, head = synthetic_session(len(bodies), bodies=bodies)
+    for f, hh, mac in entries:
+        insert_entry(conn, f, hh, mac)
+    insert_head(conn, head)
+    for i, body in enumerate(bodies):
+        add_artifact(conn, "obs:synthetic:%04d" % i, sha256_hex(body), body.decode("utf-8"))
+    conn.commit()
+    conn.close()
+
+
+class ReferencedArtifacts(unittest.TestCase):
+    """--referenced-artifacts: the cited files are carried under the digest
+    the RECORD cites, verbatim and unchecked, and a cited artifact that
+    cannot be found is listed present=false rather than omitted."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-referenced-")
+        self.db = os.path.join(self.tmp, "snapshot.db")
+        self.outbox = os.path.join(self.tmp, "outbox")
+        os.makedirs(self.outbox)
+        self.videos = [b"video-%d" % i + b"\x00" * 32 for i in range(3)]
+        self.validations = [b"VIDEO IS VALID!\nsegment %d\n" % i for i in range(3)]
+        bodies, prev = [], None
+        for i, (v, val) in enumerate(zip(self.videos, self.validations)):
+            bodies.append(camera_body(i, v, val, prev))
+            prev = sha256_hex(v)
+        build_referenced_db(self.db, bodies)
+        self.db_sha = sha256_file(self.db)
+        for i, (v, val) in enumerate(zip(self.videos, self.validations)):
+            self._write("%s.%06d.%s.mp4" % (REF_CAMERA, i, sha256_hex(v)), v)
+            self._write("%s.%06d.%s.validation.txt" % (REF_CAMERA, i, sha256_hex(v)), val)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, data, where=None):
+        with open(os.path.join(where or self.outbox, name), "wb") as f:
+            f.write(data)
+
+    def out(self, name):
+        return os.path.join(self.tmp, name)
+
+    def export(self, name, *extra, dirs=None):
+        out = self.out(name)
+        args = ["--db", self.db, "--out", out, "--sessions", REF_SESSION, "--artifacts"]
+        for d in dirs if dirs is not None else [self.outbox]:
+            args += ["--referenced-artifacts", d]
+        r = run_export(*args, *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "manifest.json")) as f:
+            return out, r.stdout, json.load(f)
+
+    # --- carriage ---------------------------------------------------------
+
+    def test_every_cited_artifact_is_carried_and_listed(self):
+        out, stdout, manifest = self.export("bundle")
+        ref = manifest["referenced_artifacts"]
+        self.assertEqual(len(ref), 6)                  # 3 records x 2 citations
+        self.assertTrue(all(r["present"] for r in ref))
+        self.assertIn("referenced artifacts: 6 cited by the carried camera records; 6 carried, 0 not found", stdout)
+        self.assertEqual(sha256_file(self.db), self.db_sha)
+        for v, val in zip(self.videos, self.validations):
+            for data in (v, val):
+                path = os.path.join(out, "artifacts", sha256_hex(data))
+                with open(path, "rb") as f:
+                    self.assertEqual(f.read(), data)
+
+    def test_cited_by_names_the_record_and_the_field_path(self):
+        _, _, manifest = self.export("bundle")
+        by_digest = {r["sha256"]: r for r in manifest["referenced_artifacts"]}
+        seg = by_digest[sha256_hex(self.videos[1])]["cited_by"]
+        self.assertEqual(seg, [{"session_id": REF_SESSION, "segment_seq": 1, "field": "segment_sha256"}])
+        val = by_digest[sha256_hex(self.validations[1])]["cited_by"]
+        self.assertEqual(
+            val,
+            [{"session_id": REF_SESSION, "segment_seq": 1,
+              "field": "sensor_signature.validator_output_sha256"}],
+        )
+
+    def test_the_content_addressed_layout_is_searched_too(self):
+        alt = os.path.join(self.tmp, "cas")
+        os.makedirs(alt)
+        for v in self.videos:
+            self._write("%s.mp4" % sha256_hex(v), v, where=alt)
+        for val in self.validations:
+            self._write("%s.txt" % sha256_hex(val), val, where=alt)
+        _, _, manifest = self.export("cas-bundle", dirs=[alt])
+        self.assertTrue(all(r["present"] for r in manifest["referenced_artifacts"]))
+
+    # --- a tampered file is CARRIED, not hidden ---------------------------
+
+    def test_an_altered_file_is_carried_under_the_cited_digest(self):
+        """The crux. Naming the file by its OWN hash would file altered bytes
+        under a name nobody looks up and turn a tamper into an absence."""
+        cited = sha256_hex(self.videos[1])
+        target = os.path.join(self.outbox, "%s.%06d.%s.mp4" % (REF_CAMERA, 1, cited))
+        altered = bytearray(self.videos[1])
+        altered[0] ^= 0x01
+        self._write(os.path.basename(target), bytes(altered))
+
+        out, _, manifest = self.export("tampered")
+        entry = next(r for r in manifest["referenced_artifacts"] if r["sha256"] == cited)
+        self.assertTrue(entry["present"])
+        self.assertEqual(entry["path"], "artifacts/" + cited)
+        carried = os.path.join(out, "artifacts", cited)
+        with open(carried, "rb") as f:
+            data = f.read()
+        self.assertEqual(data, bytes(altered))
+        # named by what the RECORD cites, and it does not hash to it: exactly
+        # the case the verifier has to grade FAILED
+        self.assertNotEqual(sha256_hex(data), cited)
+        self.assertFalse(os.path.exists(os.path.join(out, "artifacts", sha256_hex(bytes(altered)))))
+
+    # --- absent is listed, never omitted ---------------------------------
+
+    def test_a_missing_artifact_is_listed_present_false(self):
+        os.remove(os.path.join(
+            self.outbox, "%s.%06d.%s.validation.txt" % (REF_CAMERA, 2, sha256_hex(self.videos[2]))))
+        out, stdout, manifest = self.export("partial")
+        ref = manifest["referenced_artifacts"]
+        self.assertEqual(len(ref), 6)                  # still six: nothing omitted
+        missing = [r for r in ref if not r["present"]]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["sha256"], sha256_hex(self.validations[2]))
+        self.assertNotIn("path", missing[0])
+        self.assertIn("5 carried, 1 not found", stdout)
+        self.assertIn("NOT FOUND", stdout)
+        self.assertFalse(os.path.exists(
+            os.path.join(out, "artifacts", sha256_hex(self.validations[2]))))
+
+    def test_an_empty_search_directory_lists_every_citation_absent(self):
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(empty)
+        _, stdout, manifest = self.export("none", dirs=[empty])
+        ref = manifest["referenced_artifacts"]
+        self.assertEqual(len(ref), 6)
+        self.assertFalse(any(r["present"] for r in ref))
+        self.assertIn("0 carried, 6 not found", stdout)
+
+    # --- the flag's own edges --------------------------------------------
+
+    def test_default_export_carries_no_referenced_array(self):
+        out = self.out("plain")
+        r = run_export("--db", self.db, "--out", out, "--sessions", REF_SESSION, "--artifacts")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "manifest.json")) as f:
+            manifest = json.load(f)
+        self.assertNotIn("referenced_artifacts", manifest)
+
+    def test_without_artifacts_it_is_a_named_error(self):
+        r = run_export("--db", self.db, "--out", self.out("no-bodies"), "--sessions", REF_SESSION,
+                       "--referenced-artifacts", self.outbox)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no bodies to read the citations out of", r.stderr)
+
+    def test_a_missing_search_directory_is_a_named_error(self):
+        r = run_export("--db", self.db, "--out", self.out("no-dir"), "--sessions", REF_SESSION,
+                       "--artifacts", "--referenced-artifacts", os.path.join(self.tmp, "nope"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("not a directory", r.stderr)
+
+    # --- citation extraction ---------------------------------------------
+
+    def test_cited_digests_reads_both_fields_and_only_camera_records(self):
+        body = json.loads(camera_body(0, self.videos[0], self.validations[0]))
+        cited = export_bundle.cited_digests(body)
+        self.assertEqual(
+            cited,
+            {"segment_sha256": sha256_hex(self.videos[0]),
+             "sensor_signature.validator_output_sha256": sha256_hex(self.validations[0])},
+        )
+        self.assertEqual(export_bundle.cited_digests({"schema": "observation/1"}), {})
+        self.assertEqual(export_bundle.cited_digests({}), {})
+
+    def test_a_non_hex_citation_is_not_acted_on(self):
+        body = json.loads(camera_body(0, self.videos[0], self.validations[0]))
+        body["segment_sha256"] = "../../etc/passwd"
+        body["sensor_signature"]["validator_output_sha256"] = "NOT-A-DIGEST"
+        self.assertEqual(export_bundle.cited_digests(body), {})

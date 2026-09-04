@@ -535,7 +535,7 @@ pub fn summarise_sensor(chain: &SessionChain, store: Option<&ArtifactStore>) -> 
             let pin = sensor.get("public_key_pin").and_then(Value::as_str);
             let chain_ok = sensor
                 .get("device_chain")
-                .and_then(|c| c.get("chain_verified"))
+                .and_then(|c| c.get("chain_to_anchor_verified"))
                 .and_then(Value::as_bool);
             let serial_ok = sensor
                 .get("device_chain")
@@ -545,7 +545,7 @@ pub fn summarise_sensor(chain: &SessionChain, store: Option<&ArtifactStore>) -> 
                 (Some("PIN_UNREADABLE"), _, _) => "pinned key unreadable",
                 (Some("MISMATCH"), _, _) => "signed by a key that is not the pinned one",
                 (Some("NO_KEY_IN_STREAM"), _, _) => "no key in the stream to compare",
-                (_, Some(false), _) => "certificate chain does not reach the held root",
+                (_, Some(false), _) => "certificate chain does not reach the pinned anchor",
                 (_, _, Some(false)) => "leaf serial is not this device",
                 _ => "validator could not produce a verdict",
             };
@@ -556,15 +556,19 @@ pub fn summarise_sensor(chain: &SessionChain, store: Option<&ArtifactStore>) -> 
             bump(&mut out.pin_states, pin);
         }
         if let Some(chain) = sensor.get("device_chain").and_then(Value::as_object) {
-            let verified = chain.get("chain_verified").and_then(Value::as_bool);
+            let verified = chain.get("chain_to_anchor_verified").and_then(Value::as_bool);
             let serial = chain.get("leaf_serial_matches_device").and_then(Value::as_bool);
+            // The anchor the producer names is part of the state: a chain
+            // to a pinned intermediate is a weaker claim than one to a root
+            // held out of band, and the label must not blur them.
+            let anchor = chain.get("anchor").and_then(Value::as_str).unwrap_or("unknown");
             let state = match (verified, serial) {
-                (Some(true), Some(true)) => "VERIFIED-TO-HELD-ROOT",
-                (Some(true), Some(false)) => "CHAIN-OK-SERIAL-MISMATCH",
-                (Some(false), _) => "NOT-VERIFIED-TO-HELD-ROOT",
-                _ => "UNREADABLE",
+                (Some(true), Some(true)) => format!("VERIFIED-TO-{}", anchor.to_uppercase()),
+                (Some(true), Some(false)) => "CHAIN-OK-SERIAL-MISMATCH".to_owned(),
+                (Some(false), _) => "NOT-VERIFIED-TO-ANCHOR".to_owned(),
+                _ => "UNREADABLE".to_owned(),
             };
-            bump(&mut out.chain_states, state);
+            bump(&mut out.chain_states, &state);
         }
     }
     out.vendors.sort();

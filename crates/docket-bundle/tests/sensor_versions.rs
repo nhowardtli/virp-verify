@@ -66,9 +66,9 @@ fn sensor_v5(verdict: &str, pin: &str, chain_verified: bool, serial_ok: bool) ->
     m.insert(
         "device_chain".into(),
         json!({
-            "root_sha256": "cc".repeat(32),
-            "root_subject": "O = Axis Communications AB, CN = Axis Edge Vault CA ECC",
-            "chain_verified": chain_verified,
+            "anchor": "intermediate_pinned",
+            "anchor_sha256": "cc".repeat(32),
+            "chain_to_anchor_verified": chain_verified,
             "leaf_serial_matches_device": serial_ok,
             "leaf_not_after": "2033-10-22T20:22:29Z",
         }),
@@ -275,8 +275,8 @@ fn summary_counts_verdicts_pins_and_chains() {
     assert_eq!(
         s.chain_states,
         vec![
-            ("VERIFIED-TO-HELD-ROOT".to_owned(), 2),
-            ("NOT-VERIFIED-TO-HELD-ROOT".to_owned(), 1),
+            ("VERIFIED-TO-INTERMEDIATE_PINNED".to_owned(), 2),
+            ("NOT-VERIFIED-TO-ANCHOR".to_owned(), 1),
         ]
     );
     assert_eq!(
@@ -337,7 +337,7 @@ fn unverified_reasons_are_distinguished_not_merged() {
     assert_eq!(s.unverified_reasons.len(), 3, "{:?}", s.unverified_reasons);
     let keys: Vec<&str> = s.unverified_reasons.iter().map(|(k, _)| k.as_str()).collect();
     assert!(keys.contains(&"pinned key unreadable"));
-    assert!(keys.contains(&"certificate chain does not reach the held root"));
+    assert!(keys.contains(&"certificate chain does not reach the pinned anchor"));
     assert!(keys.contains(&"leaf serial is not this device"));
 }
 

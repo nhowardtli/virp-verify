@@ -535,9 +535,63 @@ pub struct CarriedReferenced {
     pub bytes: u64,
 }
 
+/// Why a listed referenced artifact carries no bytes.
+///
+/// The exporter's two reasons, kept apart because they are different
+/// evidence: `not_found` says the artifact was looked for and is not
+/// there; `eacces` says a search directory or the file could not be read,
+/// so no look happened and the absence proves nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotCarried {
+    NotFound,
+    /// A directory or file the exporter was not permitted to read.
+    Inaccessible,
+    /// A reason string this verifier does not recognise. Kept verbatim
+    /// rather than folded into NotFound: an unknown reason is not a known
+    /// absence, and guessing which one it is would be the same collapse
+    /// this enum exists to prevent.
+    Other(String),
+}
+
+impl NotCarried {
+    pub fn from_reason(reason: Option<&str>) -> NotCarried {
+        match reason {
+            None | Some("not_found") => NotCarried::NotFound,
+            Some("eacces") => NotCarried::Inaccessible,
+            Some(other) => NotCarried::Other(other.to_owned()),
+        }
+    }
+
+    /// Whether this absence leaves the question OPEN rather than answered.
+    /// An inaccessible artifact was never examined; an unrecognised reason
+    /// is treated the same way, because this verifier cannot say it was.
+    pub fn is_unverifiable(&self) -> bool {
+        !matches!(self, NotCarried::NotFound)
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            NotCarried::NotFound => "not carried".to_owned(),
+            NotCarried::Inaccessible => {
+                "INACCESSIBLE to the exporter — a search directory or the file could not be read, \
+                 so it was never looked at"
+                    .to_owned()
+            }
+            NotCarried::Other(r) => format!("not carried, for a reason this verifier does not know ({r:?})"),
+        }
+    }
+}
+
+/// One referenced artifact as the bundle lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReferencedEntry {
+    Carried(CarriedReferenced),
+    NotCarried(NotCarried),
+}
+
 /// Referenced artifacts keyed by the CITED digest they are filed under.
-/// `None` for a row the bundle lists but carries no bytes for.
-pub type ReferencedStore = BTreeMap<String, Option<CarriedReferenced>>;
+pub type ReferencedStore = BTreeMap<String, ReferencedEntry>;
 
 /// One citation that did not verify, named so a reader can act on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -566,10 +620,14 @@ pub struct ReferencedCoverage {
     pub citations: usize,
     pub verified: usize,
     pub absent: usize,
+    /// Citations the exporter could not look at. NOT folded into `absent`:
+    /// a blind look is not a finding.
+    #[serde(default)]
+    pub inaccessible: usize,
     pub failed: usize,
     /// Mismatches: a file IS carried and hashes to something else.
     pub failures: Vec<ReferencedDefect>,
-    /// Citations the bundle carries no bytes for.
+    /// Citations the bundle carries no bytes for, for any reason.
     pub absences: Vec<ReferencedDefect>,
 }
 
@@ -592,6 +650,12 @@ impl ReferencedCoverage {
         if self.absent > 0 {
             s.push_str(&format!("; {} not carried — ABSENT, not a pass", self.absent));
         }
+        if self.inaccessible > 0 {
+            s.push_str(&format!(
+                "; {} INACCESSIBLE to the exporter — never looked at, so not graded absent",
+                self.inaccessible
+            ));
+        }
         s
     }
 }
@@ -612,10 +676,12 @@ pub fn grade_referenced_artifact_binding(
         citations: 0,
         verified: 0,
         absent: 0,
+        inaccessible: 0,
         failed: 0,
         failures: Vec::new(),
         absences: Vec::new(),
     };
+    let mut blocked: Option<String> = None;
     let (Some(store), Some(referenced)) = (store, referenced) else {
         return (Status::Absent, cov);
     };
@@ -639,15 +705,30 @@ pub fn grade_referenced_artifact_binding(
             };
             match referenced.get(&cited) {
                 // Listed and carried: the only case that can verify.
-                Some(Some(carried)) if carried.sha256 == cited => cov.verified += 1,
-                Some(Some(carried)) => {
+                Some(ReferencedEntry::Carried(c)) if c.sha256 == cited => cov.verified += 1,
+                Some(ReferencedEntry::Carried(c)) => {
                     cov.failed += 1;
-                    cov.failures.push(defect(Some(carried.sha256.clone())));
+                    cov.failures.push(defect(Some(c.sha256.clone())));
                 }
-                // present=false, or not listed at all. The same fact for a
-                // reader: the bundle put no bytes in front of them, so
-                // nothing was checked.
-                Some(None) | None => {
+                // Listed as not carried, WITH a reason. An artifact the
+                // exporter could not read was never examined, so its
+                // absence from the bundle says nothing about the evidence
+                // and must not be graded as though it did.
+                Some(ReferencedEntry::NotCarried(why)) if why.is_unverifiable() => {
+                    cov.inaccessible += 1;
+                    blocked.get_or_insert_with(|| {
+                        format!(
+                            "segment_seq {} cites {} {}, which is {}",
+                            segment_seq.unwrap_or(e.fields.sequence),
+                            field,
+                            cited,
+                            why.label()
+                        )
+                    });
+                    cov.absences.push(defect(None));
+                }
+                // Not there, and demonstrably so.
+                Some(ReferencedEntry::NotCarried(_)) | None => {
                     cov.absent += 1;
                     cov.absences.push(defect(None));
                 }
@@ -669,6 +750,10 @@ pub fn grade_referenced_artifact_binding(
                 d.recomputed.as_deref().unwrap_or("?")
             ),
         }
+    } else if let Some(reason) = blocked {
+        // UNVERIFIABLE outranks ABSENT: a bundle that could not look at
+        // part of the evidence has not established that part is missing.
+        Status::Unverifiable { reason }
     } else if cov.citations == 0 || cov.absent > 0 {
         Status::Absent
     } else {

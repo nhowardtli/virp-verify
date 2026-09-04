@@ -38,7 +38,8 @@ use crate::seal::Seal;
 use crate::sig::PublicKey;
 use crate::verify::{
     grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
-    CarriedReferenced, Keyring, ReferencedCoverage, ReferencedStore, SessionChain, SessionReport, Status, Verdict,
+    CarriedReferenced, Keyring, NotCarried, ReferencedCoverage, ReferencedEntry, ReferencedStore, SessionChain,
+    SessionReport, Status, Verdict,
 };
 
 pub const BUNDLE_VERSION: &str = "docket-bundle/0.1";
@@ -119,6 +120,18 @@ pub struct ManifestReferencedArtifact {
     /// find is listed `false`, never omitted: "the bundle does not carry it"
     /// and "the record cites nothing" must not read the same.
     pub present: bool,
+    /// WHY it is not carried, when `present` is false: `not_found` (looked
+    /// for, not there) or `eacces` (a search directory or the file itself
+    /// could not be read, so the look never happened).
+    ///
+    /// The distinction changes the GRADE, not just the wording. A
+    /// not_found citation is ABSENT — the bundle demonstrably does not
+    /// carry it. An eacces citation is UNVERIFIABLE — the exporter was
+    /// blind at that point, so the bundle's silence about the artifact is
+    /// not evidence of anything. Absent from bundles written before the
+    /// exporter recorded it, which read as not_found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Which record cites a referenced artifact, and through which field.
@@ -1137,7 +1150,11 @@ impl Bundle {
                         // the bundle does not put bytes in front of anyone.
                         _ => None,
                     };
-                    if store.insert(mr.sha256.clone(), carried).is_some() {
+                    let entry = match carried {
+                        Some(c) => ReferencedEntry::Carried(c),
+                        None => ReferencedEntry::NotCarried(NotCarried::from_reason(mr.reason.as_deref())),
+                    };
+                    if store.insert(mr.sha256.clone(), entry).is_some() {
                         return Err(BundleError::DuplicateReferencedArtifact(mr.sha256.clone()));
                     }
                 }
@@ -1605,10 +1622,13 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
     let referenced_artifact_binding = if sessions.iter().all(|s| s.referenced_artifact_binding.is_none()) {
         None
     } else {
+        // Failed > Unverifiable > Absent > Verified. An inaccessible
+        // citation leaves the question open; a not-carried one answers it.
         let rank = |st: &Status| match st {
-            Status::Failed { .. } => 2,
-            Status::Verified => 0,
-            _ => 1,
+            Status::Failed { .. } => 3,
+            Status::Unverifiable { .. } => 2,
+            Status::Absent => 1,
+            _ => 0,
         };
         let worst = sessions
             .iter()
@@ -1616,11 +1636,17 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             .max_by_key(|st| rank(st))
             .cloned()
             .unwrap_or(Status::Absent);
-        let (citations, verified, absent, failed) = sessions
+        let (citations, verified, absent, inaccessible, failed) = sessions
             .iter()
             .filter_map(|s| s.referenced_coverage.as_ref())
-            .fold((0, 0, 0, 0), |a, c| {
-                (a.0 + c.citations, a.1 + c.verified, a.2 + c.absent, a.3 + c.failed)
+            .fold((0, 0, 0, 0, 0), |a, c| {
+                (
+                    a.0 + c.citations,
+                    a.1 + c.verified,
+                    a.2 + c.absent,
+                    a.3 + c.inaccessible,
+                    a.4 + c.failed,
+                )
             });
         let detail = if citations == 0 {
             "no camera record in this bundle cites an artifact by digest".to_owned()
@@ -1628,6 +1654,11 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             let mut d = format!("{verified} of {citations} cited artifact(s) recomputed and matching");
             if absent > 0 {
                 d.push_str(&format!("; {absent} not carried — ABSENT, not a pass"));
+            }
+            if inaccessible > 0 {
+                d.push_str(&format!(
+                    "; {inaccessible} INACCESSIBLE to the exporter — never looked at"
+                ));
             }
             if failed > 0 {
                 d.push_str(&format!("; {failed} carried and hashing to something else"));

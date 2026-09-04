@@ -105,15 +105,20 @@ EXIT CODES (deliberately NOT collapsed into pass/fail):
 WHAT IS RECOMPUTED, AND WHAT IS NOT:
     Every hash, link, HMAC-shaped field and signature in the chain, plus each
     carried artifact BODY against its artifact_hash. When a bundle carries the
-    REFERENCED artifacts (exporter --referenced-artifacts) the two digests a
-    camera record cites are recomputed too — segment_sha256 over the segment
-    video, and sensor_signature.validator_output_sha256 over the validator's
-    output — and reported as referenced_artifact_binding. Which digests are
-    cited comes from the signed BODIES, never from the unsigned manifest.
-    A bundle that does not carry them grades ABSENT, which is not a pass.
-    Still not recomputed: prev_segment_sha256 as a chain of files,
-    sensor_key_sha256, device_chain.anchor_sha256 — and no frame is ever
-    decoded, so nothing here judges what the video SHOWS.
+    REFERENCED artifacts (exporter --referenced-artifacts), the digests a
+    camera record cites are recomputed too and reported as
+    referenced_artifact_binding: segment_sha256 over the segment video,
+    sensor_signature.validator_output_sha256 over the validator's output, and
+    from /6 sensor_signature.device_chain.leaf_sha256 over the device leaf
+    certificate in DER. Which digests are cited comes from the signed BODIES,
+    never from the unsigned manifest. A bundle that does not carry them grades
+    ABSENT, which is not a pass.
+
+    Still NOT recomputed: prev_segment_sha256 as a chain of files;
+    sensor_key_sha256, whose digest is over the key as the SEI presents it;
+    and device_chain.anchor_sha256, whose preimage is the examiner's own
+    out-of-band CA file and never travels inside the evidence it anchors. No
+    frame is ever decoded either, so nothing here judges what the video SHOWS.
 
 virp-verify never signs, never holds a private key, and never executes anything.
 ";
@@ -763,7 +768,7 @@ fn render_text(
     );
     let _ = writeln!(
         out,
-        "What referenced_artifact_binding covers: the two artifacts a camera record cites by digest — the segment video (segment_sha256) and the validator's own output about it (sensor_signature.validator_output_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry, which is every bundle exported before the exporter could carry them. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256, and device_chain.anchor_sha256."
+        "What referenced_artifact_binding covers: the artifacts a camera record cites by digest — the segment video (segment_sha256), the validator's own output about it (sensor_signature.validator_output_sha256), and from /6 the device leaf certificate in DER (sensor_signature.device_chain.leaf_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256 (the digest is over the key as the SEI presents it, which the bundle does not carry), and device_chain.anchor_sha256 (the pinned CA is the examiner's own file, held out of band, never shipped inside the evidence it anchors)."
     );
     let _ = writeln!(
         out,

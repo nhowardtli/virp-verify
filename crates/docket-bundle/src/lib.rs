@@ -27,7 +27,7 @@ pub use bundle::{
 };
 pub use camera::{
     cited_digests, claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage,
-    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_SEGMENT,
+    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_LEAF, CITED_SEGMENT,
     CITED_VALIDATOR_OUTPUT, SENSOR_CAPTION,
 };
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
@@ -39,9 +39,9 @@ pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{
     grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
-    CarriedReferenced, ChainEntry, ChainHead, DetachedSignature, Keyring, PropertyReport, ReferencedCoverage,
-    ReferencedDefect, ReferencedStore, SessionChain, SessionReport, SignerReport, SignerTrust, Status, TrustSource,
-    Verdict,
+    CarriedReferenced, ChainEntry, ChainHead, DetachedSignature, Keyring, NotCarried, PropertyReport,
+    ReferencedCoverage, ReferencedDefect, ReferencedEntry, ReferencedStore, SessionChain, SessionReport, SignerReport,
+    SignerTrust, Status, TrustSource, Verdict,
 };
 
 /// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).

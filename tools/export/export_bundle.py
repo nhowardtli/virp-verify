@@ -208,10 +208,53 @@ class ExportError(Exception):
 # --- database ---------------------------------------------------------------
 
 
+def refuse_unless_wal_is_empty(db_path):
+    """A non-empty `-wal` beside the source is a REFUSAL, not a warning.
+
+    `immutable=1` tells SQLite the file will not change, which is what
+    keeps this exporter from taking locks or writing sidecars — and which
+    also makes it IGNORE the write-ahead log entirely. Point it at a live
+    daemon's database and it exports the last checkpointed state in
+    silence: measured 2026-09-04, a 4.2 MB WAL held five freshly appended
+    records and the bundle came out with fifteen entries instead of
+    twenty, complete-looking and short.
+
+    That is the same class of defect as an unreadable directory grading
+    ABSENT — a quiet undercount presented as a full account — and it is
+    worse here, because nothing downstream can detect it: the bundle is
+    internally consistent, every hash and signature verifies, and the
+    missing records leave no hole for the verifier to find.
+
+    This REFUSES rather than checkpointing. Checkpointing writes to the
+    source database, and "writes go ONLY under --out" is the invariant
+    that makes this script safe to point at production. The operator
+    checkpoints a COPY; the message says how."""
+    wal = db_path + "-wal"
+    try:
+        size = os.path.getsize(wal)
+    except OSError:
+        return                                  # no WAL: nothing to drop
+    if size == 0:
+        return                                  # checkpointed already
+    raise ExportError(
+        f"{db_path} has a non-empty write-ahead log ({wal}, {size} bytes)\n"
+        f"  This exporter opens the database with immutable=1, which IGNORES the WAL: every entry\n"
+        f"  committed but not yet checkpointed would be silently missing from the bundle, and the\n"
+        f"  result would look complete. Refusing rather than exporting an undercount.\n"
+        f"  Checkpointing writes to the database, which this script will not do to your source.\n"
+        f"  Snapshot and checkpoint a COPY, then export that:\n"
+        f"    cp {db_path} /tmp/snap.db && cp {wal} /tmp/snap.db-wal\n"
+        f"    python3 -c \"import sqlite3;c=sqlite3.connect('/tmp/snap.db');\"\n"
+        f"             \"c.execute('PRAGMA wal_checkpoint(TRUNCATE)');c.commit()\"\n"
+        f"    export_bundle.py --db /tmp/snap.db ..."
+    )
+
+
 def open_readonly(db_path):
     """Open the database read-only and immutable. Never creates the file."""
     if not os.path.isfile(db_path):
         raise ExportError(f"database not found: {db_path}")
+    refuse_unless_wal_is_empty(db_path)
     abs_path = os.path.abspath(db_path)
     uri = "file:" + urllib.parse.quote(abs_path, safe="/") + "?mode=ro&immutable=1"
     try:
@@ -540,16 +583,46 @@ def referenced_patterns(field, seg_sha, digest):
     )
 
 
+#: the artifact is not under any search directory
+REASON_NOT_FOUND = "not_found"
+#: a search directory, or the file itself, could not be read
+REASON_EACCES = "eacces"
+
+
 def find_referenced(dirs, field, seg_sha, digest):
-    """The first file across the search directories matching this artifact's
-    naming, or None. Digests are hex, so they carry no glob metacharacters
-    and the patterns above cannot be widened by their own inputs."""
+    """(path, reason) for this artifact.
+
+    `(path, None)` when found and readable, `(None, REASON_NOT_FOUND)` when
+    no directory holds it, `(None, REASON_EACCES)` when a directory could
+    not be listed or the file could not be opened.
+
+    THE TWO ABSENCES ARE DIFFERENT FACTS. glob() returns [] for an
+    unreadable directory exactly as it does for an empty one, so an
+    exporter run without permission on the spool produced a bundle
+    declaring every artifact missing — a complete, confident, wrong
+    statement about the evidence. "It is not there" and "I was not allowed
+    to look" must not reduce to the same word, for the same reason
+    "verified" and "not checked" must not.
+
+    EACCES wins over not-found across directories: if any directory could
+    not be searched, the artifact's absence is unproven, whatever the
+    readable ones happened to hold."""
+    blocked = False
     for d in dirs:
+        if not os.access(d, os.R_OK | os.X_OK):
+            blocked = True
+            continue
         for pat in referenced_patterns(field, seg_sha, digest):
-            hits = sorted(glob.glob(os.path.join(d, pat)))
-            if hits:
-                return hits[0]
-    return None
+            try:
+                hits = sorted(glob.glob(os.path.join(d, pat)))
+            except OSError:
+                blocked = True
+                continue
+            for hit in hits:
+                if os.access(hit, os.R_OK):
+                    return hit, None
+                blocked = True          # it IS there; we cannot read it
+    return None, (REASON_EACCES if blocked else REASON_NOT_FOUND)
 
 
 def collect_referenced(chains, store, dirs):
@@ -576,7 +649,9 @@ def collect_referenced(chains, store, dirs):
             seq = body.get("segment_seq")
             for field, digest in sorted(cited.items()):
                 rec = found.setdefault(
-                    digest, {"sha256": digest, "cited_by": [], "present": False, "source": None}
+                    digest,
+                    {"sha256": digest, "cited_by": [], "present": False,
+                     "source": None, "reason": REASON_NOT_FOUND},
                 )
                 citation = {
                     "session_id": chain["session_id"],
@@ -586,10 +661,15 @@ def collect_referenced(chains, store, dirs):
                 if citation not in rec["cited_by"]:
                     rec["cited_by"].append(citation)
                 if rec["source"] is None:
-                    path = find_referenced(dirs, field, seg_sha, digest)
+                    path, reason = find_referenced(dirs, field, seg_sha, digest)
                     if path is not None:
                         rec["source"] = path
                         rec["present"] = True
+                        rec["reason"] = None
+                    elif reason == REASON_EACCES:
+                        # never downgraded back to not_found by a later
+                        # citation that happened to look somewhere readable
+                        rec["reason"] = REASON_EACCES
     for rec in found.values():
         rec["cited_by"].sort(key=lambda c: (c["session_id"], c["segment_seq"] or 0, c["field"]))
     return [found[d] for d in sorted(found)]
@@ -1019,6 +1099,12 @@ def run_export(
         manifest["referenced_artifacts"] = []
         for rec in referenced:
             entry = {"sha256": rec["sha256"], "cited_by": rec["cited_by"], "present": rec["present"]}
+            if not rec["present"]:
+                # WHY it is not carried, because the two reasons are
+                # different evidence: not_found says the artifact was
+                # looked for and is not there; eacces says the look
+                # itself did not happen and the absence proves nothing.
+                entry["reason"] = rec["reason"]
             if rec["present"]:
                 # Named by the CITED digest, not by the bytes' own hash: the
                 # verifier looks the citation up and recomputes, so altered
@@ -1073,11 +1159,18 @@ def run_export(
         print(f"  artifact bodies carried: {len(body_store)} distinct artifact_hash file(s) under artifacts/")
     if referenced_dirs:
         present = sum(1 for r in referenced if r["present"])
-        missing = len(referenced) - present
+        blocked = sum(1 for r in referenced if r["reason"] == REASON_EACCES)
+        missing = len(referenced) - present - blocked
         print(
             f"  referenced artifacts: {len(referenced)} cited by the carried camera records; "
-            f"{present} carried, {missing} not found (listed present=false)"
+            f"{present} carried, {missing} not found, {blocked} INACCESSIBLE (listed present=false)"
         )
+        if blocked:
+            print(
+                "  INACCESSIBLE means a search directory or file could not be read, so those "
+                "artifacts were never looked at — their absence from this bundle is not evidence "
+                "that they are absent. virp-verify grades them UNVERIFIABLE, not ABSENT."
+            )
         print(
             "  carried VERBATIM under the digest the record cites, unchecked here — virp-verify "
             "recomputes them as referenced_artifact_binding, and a missing one grades ABSENT"
@@ -1085,7 +1178,8 @@ def run_export(
         for rec in referenced:
             if not rec["present"]:
                 c = rec["cited_by"][0]
-                print(f"    NOT FOUND  {rec['sha256']}  cited by seq {c['segment_seq']} {c['field']}")
+                label = "INACCESSIBLE" if rec["reason"] == REASON_EACCES else "NOT FOUND   "
+                print(f"    {label}  {rec['sha256']}  cited by seq {c['segment_seq']} {c['field']}")
     if redacted:
         import docket_mask
 

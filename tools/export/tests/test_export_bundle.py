@@ -610,6 +610,43 @@ class ExportAndVerify(unittest.TestCase):
         self.assertIn("sequence=2", r.stderr)
         self.assertIn("'signer_org_id' is NULL", r.stderr)
 
+    def test_a_non_empty_wal_is_refused_not_silently_dropped(self):
+        """immutable=1 IGNORES the write-ahead log. Measured 2026-09-04: a
+        live chain with a 4.2 MB WAL exported fifteen entries instead of
+        twenty, and the bundle looked complete — every hash and signature
+        verified, and the five missing records left no hole to find."""
+        db = self.out("wal.db")
+        build_fixture_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE scratch (x TEXT)")
+        conn.execute("INSERT INTO scratch VALUES ('uncheckpointed')")
+        conn.commit()
+        self.assertGreater(os.path.getsize(db + "-wal"), 0, "fixture needs a live WAL")
+        r = run_export("--db", db, "--out", self.out("from-wal"), "--sessions", SYNTHETIC_SESSION)
+        conn.close()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("non-empty write-ahead log", r.stderr)
+        self.assertIn("IGNORES the WAL", r.stderr)
+        # it must say which it did, and it refuses rather than writing to
+        # the operator's source database
+        self.assertIn("Refusing rather than exporting an undercount", r.stderr)
+        self.assertIn("wal_checkpoint(TRUNCATE)", r.stderr)
+        self.assertFalse(os.path.exists(self.out("from-wal")))
+
+    def test_a_checkpointed_wal_exports_normally(self):
+        db = self.out("ckpt.db")
+        build_fixture_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE scratch (x TEXT)")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+        conn.close()
+        r = run_export("--db", db, "--out", self.out("from-ckpt"), "--sessions", SYNTHETIC_SESSION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_stdlib_only(self):
         with open(EXPORT) as f:
             src = f.read()
@@ -1489,6 +1526,11 @@ class ReferencedArtifacts(unittest.TestCase):
         with open(os.path.join(where or self.outbox, name), "wb") as f:
             f.write(data)
 
+    def _restore(self, path, mode):
+        """chmod back, tolerating tearDown having already removed the tree
+        (addCleanup runs after tearDown, not before)."""
+        self.addCleanup(lambda: os.path.exists(path) and os.chmod(path, mode))
+
     def out(self, name):
         return os.path.join(self.tmp, name)
 
@@ -1589,6 +1631,49 @@ class ReferencedArtifacts(unittest.TestCase):
         self.assertEqual(len(ref), 7)
         self.assertFalse(any(r["present"] for r in ref))
         self.assertIn("0 carried, 7 not found", stdout)
+
+    # --- inaccessible is not absent --------------------------------------
+
+    def test_an_unreadable_directory_is_eacces_never_not_found(self):
+        """chmod 000. glob() cannot tell an unreadable directory from an
+        empty one, so the exporter used to write a manifest declaring
+        every artifact missing after never being allowed to look."""
+        os.chmod(self.outbox, 0o000)
+        self._restore(self.outbox, 0o700)
+        if os.access(self.outbox, os.R_OK):
+            self.skipTest("running as root: chmod 000 does not deny access")
+        _, stdout, manifest = self.export("blocked")
+        ref = manifest["referenced_artifacts"]
+        self.assertTrue(all(not r["present"] for r in ref))
+        self.assertTrue(all(r["reason"] == "eacces" for r in ref), ref)
+        self.assertIn("INACCESSIBLE", stdout)
+        self.assertIn("their absence from this bundle is not evidence", stdout)
+
+    def test_an_unreadable_file_is_eacces_not_not_found(self):
+        target = os.path.join(
+            self.outbox, "%s.%06d.%s.mp4" % (REF_CAMERA, 1, sha256_hex(self.videos[1])))
+        os.chmod(target, 0o000)
+        self._restore(target, 0o600)
+        if os.access(target, os.R_OK):
+            self.skipTest("running as root: chmod 000 does not deny access")
+        _, _, manifest = self.export("blocked-file")
+        row = next(r for r in manifest["referenced_artifacts"]
+                   if r["sha256"] == sha256_hex(self.videos[1]))
+        self.assertFalse(row["present"])
+        self.assertEqual(row["reason"], "eacces")
+
+    def test_a_genuinely_missing_file_still_reads_not_found(self):
+        """The other half: the distinction is only worth having if the
+        ordinary absence keeps its own, weaker, word."""
+        os.remove(os.path.join(
+            self.outbox, "%s.%06d.%s.validation.txt" % (REF_CAMERA, 2, sha256_hex(self.videos[2]))))
+        _, stdout, manifest = self.export("plain-missing")
+        row = next(r for r in manifest["referenced_artifacts"]
+                   if r["sha256"] == sha256_hex(self.validations[2]))
+        self.assertEqual(row["reason"], "not_found")
+        self.assertIn("NOT FOUND", stdout)
+        self.assertIn("0 INACCESSIBLE", stdout)     # counted, none of them
+        self.assertNotIn("    INACCESSIBLE", stdout)
 
     # --- the flag's own edges --------------------------------------------
 

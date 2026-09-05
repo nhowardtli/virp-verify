@@ -1,0 +1,88 @@
+# CI for the public verifier + exporter tree.
+#
+# Two halves of one contract are tested here. `virp-verify` grades a bundle;
+# `tools/export/export_bundle.py` writes one. The exporter's suite is not a
+# Python unit test with a mocked reader — it builds a chain database from the
+# golden vectors, exports a bundle, and runs the REAL verifier binary built in
+# this same job against the result. A change to either half that breaks the
+# agreement fails here.
+#
+# Toolchain comes from rust-toolchain.toml (pinned, with clippy + rustfmt);
+# nothing installs a floating "stable".
+#
+# Network use: cargo's fetch of crates.io, `cargo install cargo-deny --locked`,
+# cargo-deny's fetch of the RustSec advisory database, and one pip install of
+# pytest. Nothing else. The exporter itself opens no socket in these tests.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt / clippy / test / export / deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-deny
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test --all
+        run: cargo test --all --locked
+
+      # Debug and release are not the same program: Rust checks integer
+      # overflow in debug and wraps in release, so the hostile-input suites
+      # only bound both behaviours if both profiles run.
+      - name: cargo test --all --release
+        run: cargo test --all --locked --release
+
+      # Build the verifier the exporter tests will run. Doing it explicitly
+      # means a failure here reads as a build failure rather than surfacing
+      # inside a Python test that shells out to cargo.
+      - name: Build virp-verify for the exporter tests
+        run: cargo build --locked -p virp-verify
+
+      # pytest, not `unittest discover`. test_docket_mask.py is written with
+      # pytest.mark.parametrize — one case per corpus fixture — and collects
+      # ZERO tests under unittest, which is how it went unrun in CI before this
+      # tree took it over. pytest runs both suites, including the unittest
+      # TestCase classes in test_export_bundle.py.
+      - name: Install pytest
+        run: python3 -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: exporter and masking tests
+        run: python3 -m pytest tools/export/tests -q
+
+      - name: Install cargo-deny
+        run: command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
+
+      - name: cargo deny check
+        run: cargo deny check

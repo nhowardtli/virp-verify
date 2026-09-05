@@ -789,10 +789,12 @@ fn render_text(
                 .map(|c| c.declaration_failures.as_slice())
                 .unwrap_or_default()
             {
-                let why = format!(
-                    "seq {} cites {}, claimed declared by {} seq {} — {}",
-                    f.sequence, f.cited, f.retention_session, f.retention_sequence, f.why
-                );
+                let pointer = match (&f.retention_session, f.retention_sequence) {
+                    (Some(sess), Some(seq)) => format!("claimed declared by {sess} seq {seq}"),
+                    // No pointer to print: naming one would invent it.
+                    _ => "claims a declaration it does not identify".to_owned(),
+                };
+                let why = format!("seq {} cites {}, {} — {}", f.sequence, f.cited, pointer, f.why);
                 let _ = writeln!(out, "  {:<22} {:<38} {}", "", "declaration NOT honoured", why);
             }
         }

@@ -269,13 +269,73 @@ fn a_declared_absence_is_never_unverifiable() {
     );
 }
 
+/// §5: retention_session and retention_sequence are a REQUIRED PAIR. A
+/// citation carrying one without the other is MALFORMED — the exporter
+/// wrote a declaration it cannot substantiate — not merely unresolved, and
+/// it grades ABSENT naming the field that is missing. Never UNVERIFIABLE:
+/// this is a defect in the manifest, not an open question about evidence.
 #[test]
-fn the_reason_without_a_resolvable_pointer_stays_unknown() {
-    // A manifest claiming the reason but naming no record is not a
-    // declaration, and must not quietly become a plain not_found either.
+fn a_declaration_missing_its_session_grades_absent_naming_the_field() {
+    let (cam, ret, store, _, digest) = declared_setup();
+    let mut referenced = ReferencedStore::new();
+    referenced.insert(
+        digest,
+        ReferencedEntry::NotCarried(NotCarried::from_manifest(
+            Some("absent_by_declared_policy"),
+            Some(0),
+            None, // the session is missing
+        )),
+    );
+    let chains = vec![cam.clone(), ret];
+    let key = scratch_key();
+    let evidence = RetentionEvidence {
+        chains: &chains,
+        producer_keys: std::slice::from_ref(&key),
+    };
+    let (status, cov) = grade_referenced_artifact_binding(&cam, Some(&store), Some(&referenced), Some(&evidence));
+    assert_eq!(
+        status,
+        Status::Absent,
+        "malformed is a definite absence, not an open question"
+    );
+    assert_eq!(cov.absent, 1);
+    assert_eq!(cov.inaccessible, 0, "must NOT land in the never-looked-at bucket");
+    assert_eq!(cov.absent_declared, 0, "a malformed declaration declares nothing");
+    assert_eq!(cov.declaration_failures.len(), 1, "{cov:?}");
+    assert!(
+        cov.declaration_failures[0].why.contains("retention_session"),
+        "the missing field must be named: {cov:?}"
+    );
+}
+
+#[test]
+fn a_declaration_missing_its_sequence_grades_absent_naming_the_field() {
+    let n = NotCarried::from_manifest(Some("absent_by_declared_policy"), None, Some(RETENTION_SESSION));
+    assert!(!n.is_unverifiable(), "malformed is ABSENT-family, never UNVERIFIABLE");
+    assert!(n.label().contains("retention_sequence"), "{}", n.label());
+}
+
+#[test]
+fn a_declaration_missing_both_fields_names_both() {
     let n = NotCarried::from_manifest(Some("absent_by_declared_policy"), None, None);
+    assert!(!n.is_unverifiable());
+    assert!(n.label().contains("retention_session"), "{}", n.label());
+    assert!(n.label().contains("retention_sequence"), "{}", n.label());
+}
+
+/// A reason this verifier does not recognise is still UNVERIFIABLE: it may
+/// name a look that never happened, and guessing which known absence it is
+/// would be the collapse the enum exists to prevent. Distinct from a
+/// MALFORMED declaration, which is a reason we DO know, written wrongly.
+#[test]
+fn an_unrecognised_reason_still_leaves_the_question_open() {
+    let n = NotCarried::from_manifest(Some("some_future_reason"), None, None);
     assert!(matches!(n, NotCarried::Other(_)), "{n:?}");
-    assert!(n.is_unverifiable(), "an unresolvable claim leaves the question open");
+    assert!(n.is_unverifiable(), "an unknown reason is not a known absence");
+    // And a malformed declaration is NOT folded in with it.
+    let m = NotCarried::from_manifest(Some("absent_by_declared_policy"), None, None);
+    assert!(matches!(m, NotCarried::MalformedDeclaration { .. }), "{m:?}");
+    assert!(!m.is_unverifiable());
 }
 
 // ---------------------------------------------------------------------------

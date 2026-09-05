@@ -583,6 +583,19 @@ pub enum NotCarried {
         retention_sequence: i64,
         retention_session: String,
     },
+    /// `absent_by_declared_policy` that does not name BOTH
+    /// `retention_session` and `retention_sequence`. Spec §5 makes the pair
+    /// required, so this citation is MALFORMED — the exporter wrote a
+    /// declaration it cannot substantiate — rather than merely unresolved.
+    ///
+    /// It grades ABSENT, naming the field that is missing, and never
+    /// UNVERIFIABLE: UNVERIFIABLE says the evidence could not be looked at,
+    /// and this is a defect in the manifest, not a question about the
+    /// evidence. Nor is it folded into plain `NotFound`, which would hide
+    /// that someone wrote a claim here at all.
+    MalformedDeclaration {
+        missing: String,
+    },
     /// A reason string this verifier does not recognise. Kept verbatim
     /// rather than folded into NotFound: an unknown reason is not a known
     /// absence, and guessing which one it is would be the same collapse
@@ -613,10 +626,15 @@ impl NotCarried {
                     retention_sequence,
                     retention_session: session.to_owned(),
                 },
-                _ => NotCarried::Other(format!(
-                    "{REASON_ABSENT_BY_DECLARED_POLICY} without a resolvable \
-                     retention_sequence/retention_session"
-                )),
+                (Some(_), None) => NotCarried::MalformedDeclaration {
+                    missing: "retention_session".to_owned(),
+                },
+                (None, Some(_)) => NotCarried::MalformedDeclaration {
+                    missing: "retention_sequence".to_owned(),
+                },
+                (None, None) => NotCarried::MalformedDeclaration {
+                    missing: "retention_session and retention_sequence".to_owned(),
+                },
             },
             Some(other) => NotCarried::Other(other.to_owned()),
         }
@@ -626,7 +644,10 @@ impl NotCarried {
     /// An inaccessible artifact was never examined; an unrecognised reason
     /// is treated the same way, because this verifier cannot say it was.
     pub fn is_unverifiable(&self) -> bool {
-        !matches!(self, NotCarried::NotFound | NotCarried::AbsentByDeclaredPolicy { .. })
+        !matches!(
+            self,
+            NotCarried::NotFound | NotCarried::AbsentByDeclaredPolicy { .. } | NotCarried::MalformedDeclaration { .. }
+        )
     }
 
     pub fn label(&self) -> String {
@@ -643,6 +664,9 @@ impl NotCarried {
             } => format!(
                 "not carried, declared by retention record seq {retention_sequence} in session \
                  {retention_session}"
+            ),
+            NotCarried::MalformedDeclaration { missing } => format!(
+                "not carried; the declaration is malformed — {REASON_ABSENT_BY_DECLARED_POLICY} without {missing}"
             ),
             NotCarried::Other(r) => format!("not carried, for a reason this verifier does not know ({r:?})"),
         }
@@ -716,8 +740,12 @@ pub struct DeclarationFailure {
     /// Chain sequence of the CITING record.
     pub sequence: i64,
     pub cited: String,
-    pub retention_session: String,
-    pub retention_sequence: i64,
+    /// The record the citation POINTS AT. Absent when the pointer itself was
+    /// malformed — there is no record to name, which is the defect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_sequence: Option<i64>,
     pub why: String,
 }
 
@@ -980,11 +1008,30 @@ pub fn grade_referenced_artifact_binding(
                         Err(why) => cov.declaration_failures.push(DeclarationFailure {
                             sequence: e.fields.sequence,
                             cited: cited.clone(),
-                            retention_session: retention_session.clone(),
-                            retention_sequence: *retention_sequence,
+                            retention_session: Some(retention_session.clone()),
+                            retention_sequence: Some(*retention_sequence),
                             why,
                         }),
                     }
+                }
+                // A declaration that does not name what it points at. ABSENT
+                // like any other uncarried citation, with the defect named:
+                // "someone claimed this and the claim is unusable" must not
+                // read the same as "nothing was claimed".
+                Some(ReferencedEntry::NotCarried(NotCarried::MalformedDeclaration { missing })) => {
+                    cov.absent += 1;
+                    cov.absences.push(defect(None));
+                    cov.declaration_failures.push(DeclarationFailure {
+                        sequence: e.fields.sequence,
+                        cited: cited.clone(),
+                        retention_session: None,
+                        retention_sequence: None,
+                        why: format!(
+                            "the citation claims {REASON_ABSENT_BY_DECLARED_POLICY} but names no \
+                             {missing}; the pair is required, so nothing identifies the record \
+                             that would substantiate it"
+                        ),
+                    });
                 }
                 // Not there, and demonstrably so.
                 Some(ReferencedEntry::NotCarried(_)) | None => {

@@ -1,0 +1,9 @@
+{
+  "keys": [
+    {
+      "key_id": "c1104805e1044d63a0c531eb7a025e68",
+      "algorithm": "ed25519",
+      "public_key_hex": "dd8b32538ff2019e876062e70fc2a71c0447c50c7e142497b7a96499d213bea9"
+    }
+  ]
+}

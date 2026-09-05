@@ -12,6 +12,37 @@ use docket_bundle::bundle::{Bundle, BundleReport, SealKeyCheck};
 use docket_bundle::verify::{Status, Verdict};
 use docket_bundle::{Limits, MinisignPublicKey, MinisignSignature};
 
+/// One line naming the build that produced a report: crate version, the
+/// commit it was built from, whether the tree was clean at build time, and
+/// which profile. Captured by `build.rs`; see there for why each part is
+/// present and why none of them can fail a build.
+///
+/// This is deliberately one line and deliberately unstructured — it is an
+/// identity for a human reading a report, not a field a consumer parses.
+/// The machine-readable report (`--json`) is a schema with its own version
+/// (`docket_report_version`) and does not carry this: a build identity is a
+/// fact about the tool, not about the evidence, and `docket view` serves
+/// that same JSON byte-for-byte from the same serializer.
+fn build_identity() -> String {
+    let commit = env!("VIRP_GIT_COMMIT");
+    let profile = env!("VIRP_BUILD_PROFILE");
+    // Each arm says what it knows and no more. "clean" is a claim about the
+    // working tree at build time and is only made when git answered.
+    let tree = match env!("VIRP_GIT_DIRTY") {
+        "true" => ", DIRTY (uncommitted changes at build time)",
+        "false" => ", clean",
+        // Either there was no checkout to ask about, or git could not be
+        // asked. Saying nothing is the honest option; saying "clean" is not.
+        _ => "",
+    };
+    let commit = if commit == "unknown" {
+        "commit unknown (built outside a git checkout)".to_owned()
+    } else {
+        format!("commit {commit}")
+    };
+    format!("virp-verify {} ({commit}{tree}, {profile})", env!("CARGO_PKG_VERSION"))
+}
+
 const USAGE: &str = "\
 virp-verify — Docket standalone VIRP chain verifier
 
@@ -72,6 +103,7 @@ OPTIONS:
     --seal-sig FILE      detached .minisig over the seal file, for bundles that do
                          not carry one (overrides a carried signature). Only
                          meaningful with --seal-key.
+    -V, --version        show which build this is (version, commit, tree state, profile)
     -h, --help           show this help
 
 RESOURCE LIMITS:
@@ -228,6 +260,10 @@ fn main() -> ExitCode {
                     "--seal-key" => "--seal-key",
                     _ => "--seal-sig",
                 });
+            }
+            Some("-V" | "--version") => {
+                println!("{}", build_identity());
+                return ExitCode::SUCCESS;
             }
             Some("-h" | "--help") => {
                 print!("{USAGE}");
@@ -399,7 +435,10 @@ fn render_text(
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    let _ = writeln!(out, "virp-verify — Docket standalone VIRP chain verifier");
+    // The build that produced this report leads it. A reader comparing two
+    // reports, or reproducing one, needs to know whether the same binary
+    // wrote them before anything below this line means much.
+    let _ = writeln!(out, "{} — Docket standalone VIRP chain verifier", build_identity());
     // The bundle is named by its directory name and its manifest digest, not
     // by where it happened to sit on the machine that ran the verifier. The
     // path says nothing about the evidence and travels with every copy of
@@ -794,8 +833,10 @@ fn render_text(
     // instruction someone acts on after reading everything above it.
     let _ = writeln!(
         out,
-        "Reproduce this report: virp-verify {} (add --pin <examiner-key.json> to establish signer trust)",
-        docket_bundle::bundle_display_name(path)
+        "Reproduce this report: virp-verify {} (add --pin <examiner-key.json> to establish signer trust), \
+         using {}",
+        docket_bundle::bundle_display_name(path),
+        build_identity()
     );
     if show_path {
         let _ = writeln!(out, "bundle root: {}", bundle.root.display());

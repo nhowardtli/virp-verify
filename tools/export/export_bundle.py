@@ -5,7 +5,8 @@ VIRP chain database snapshot.
 
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> \
         --sessions <id> [<id> ...] [--seal <seal-2026-08.json>] [--artifacts] \
-        [--keys <pubfile> [<pubfile> ...]] [--seal-sig <file.minisig>] [--redacted]
+        [--keys <pubfile> [<pubfile> ...]] [--seal-sig <file.minisig>] [--redacted] \
+        [--witness <url> [--witness-receipts <dir>]]
     python3 export_bundle.py --db <snapshot.db> --out <bundle-dir> --all-sessions
     python3 export_bundle.py --db <snapshot.db> --list-sessions
 
@@ -26,7 +27,15 @@ cells are hex. Anything else is exported as-is for the verifier to grade.
 
 Safety
 ------
-* Python 3 standard library only. No third-party imports, no network.
+* Python 3 standard library only. No third-party imports.
+* NO NETWORK, unless --witness is given. That flag is the only thing in this
+  script that opens a socket, it talks to the URL the operator named and to
+  nothing else, and it makes only GET requests: /v1/sth, /v1/proof and
+  /v1/pubkey. It sends the witness nothing about the chain — not a session
+  id, not a hash, not a head. It asks for a tree head, and for the audit path
+  at a leaf index this script read out of a receipt file on this host. A
+  witness that is down, slow or hostile can make rows say present=false with
+  a reason; it cannot stop the export, alter a chain row, or fail the run.
 * The database is opened READ-ONLY through a `file:...?mode=ro&immutable=1`
   URI. `immutable=1` additionally tells SQLite the file will not change
   underneath it, so it takes no locks and creates no `-journal`/`-wal`/`-shm`
@@ -104,6 +113,44 @@ artifacts/<sha256>  (--referenced-artifacts only; it needs --artifacts) the
                 not carry it" and "the record cites nothing" must not read
                 the same, and the verifier grades a missing one ABSENT,
                 which is not a pass.
+witness/sth.json  (--witness only) the signed tree head the proofs below are
+                against, as the witness served it: `sth_served` holds the
+                response BYTES verbatim, so a reader sees exactly what
+                arrived and the verifier checks the Ed25519 over the fields
+                parsed out of those bytes. `witness_key_id` is the id the
+                witness CLAIMED for itself at GET /v1/pubkey — recorded as a
+                claim, exactly like keys.json, and proving nothing. The
+                witness PUBLIC KEY never travels in the bundle; the examiner
+                supplies it out of band (virp-verify --witness-key) or the
+                result is UNVERIFIABLE.
+witness/<session>.proof.json  (--witness only) one session's leaf and its
+                RFC 9162 inclusion proof: the leaf (chain_id, sequence,
+                head_hash, key_id, the submitter's signature over it, and the
+                witness's timestamp), leaf_index, tree_size, and the audit
+                path. The verifier recomputes the path to the root of the
+                SIGNED head above — never to the unsigned root the proof
+                endpoint also returns, which is carried only as context.
+
+                HOW leaf_index IS RESOLVED, since this is the one thing the
+                witness API cannot answer: it is read from the receipt the
+                node-side submitter wrote when it submitted the head
+                (virp-witness/deploy/node/virp-witness-submit, which writes
+                <head>.witness.json beside each head under
+                /var/lib/virp/witness/heads; --witness-receipts points
+                elsewhere). Receipts are matched BY LEAF IDENTITY — all four
+                of chain_id, sequence, head_hash and key_id must equal the
+                ones this export computes from the session's own head — and
+                never by file name, which is a hint and not evidence. The
+                matched receipt's leaf_index is then confirmed by rebuilding
+                the leaf and checking that it hashes to the leaf_hash the
+                receipt carries, so the witness timestamp this bundle states
+                is the one actually bound into the tree rather than one
+                assumed from a neighbouring field.
+
+                The witness API has no route from a leaf's identity to its
+                index (GET /v1/proof takes leaf_index and tree_size only),
+                which is why the receipt is required and why --witness alone
+                is not enough on a host that never submitted.
 keys.json       produced ONLY with --keys, from PUBLIC key files the operator
                 supplies in either form virp-verify --pin also reads: 64 hex
                 characters (the raw public key), or a docket keys.json
@@ -142,6 +189,7 @@ import re
 import sqlite3
 import sys
 import urllib.parse
+import urllib.request
 
 VERSION = "0.1"
 BUNDLE_VERSION = "docket-bundle/0.1"
@@ -953,6 +1001,298 @@ def created_at_utc():
     return now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# --- witness ---------------------------------------------------------------
+#
+# Everything below runs ONLY under --witness. Nothing in it can fail an
+# export: a witness that is unreachable, that has never seen a head, or that
+# answers something unusable produces a manifest row saying so, with the
+# reason, and the bundle is written exactly as it would have been otherwise.
+# That is the same rule the node-side submitter follows for the same stated
+# reason — a chain whose availability depends on a third party's endpoint has
+# made itself hostage to the party it exists to not have to trust.
+
+WITNESS_STH_VERSION = "docket-witness-sth/1"
+WITNESS_PROOF_VERSION = "docket-witness-proof/1"
+WITNESS_LEAF_ENTRY_V = "VIRP-WITNESS-ENTRY-v1"
+WITNESS_RECEIPT_VERSION = "virp-witness-receipt/1"
+WITNESS_RECEIPTS_DEFAULT = "/var/lib/virp/witness/heads"
+WITNESS_TIMEOUT = 20
+# A tree head is ~400 bytes and an audit path is one 64-hex node per level, so
+# even an absurd log gives a few kilobytes. Anything past this is not an
+# answer to the question that was asked.
+WITNESS_MAX_RESPONSE = 1 << 20
+
+# Reasons a session carries no witness material. Three different facts, and
+# only the first says anything about the evidence.
+WITNESS_NOT_SUBMITTED = "not_submitted"
+WITNESS_UNREACHABLE = "unreachable"
+WITNESS_LOOKUP_FAILED = "lookup_failed"
+
+
+def head_canonical_bytes(session_id, last_sequence, last_entry_hash):
+    """Byte-for-byte virp/src/virp_chain.c:1113, the bytes the daemon
+    hashed and signed. No JSON escaping, by construction: every field that
+    reaches here is a hex digest, an integer, or a session id the chain
+    itself already accepted."""
+    return (
+        '{"last_entry_hash":"%s","last_sequence":%d,"session_id":"%s","v":"VIRP-CHAIN-HEAD-v1"}'
+        % (last_entry_hash, last_sequence, session_id)
+    ).encode("utf-8")
+
+
+def witness_leaf_data(leaf):
+    """The RFC 9162 leaf data: the bytes SHA-256(0x00 || ...) is taken over.
+    Keys lexicographic; fixed-width hex, an integer and a fixed-shape
+    timestamp throughout, so there is nothing to escape."""
+    return (
+        '{"chain_id":"%s","head_hash":"%s","key_id":"%s","sequence":%d,'
+        '"signature":"%s","timestamp":"%s","v":"%s"}'
+        % (
+            leaf["chain_id"],
+            leaf["head_hash"],
+            leaf["key_id"],
+            leaf["sequence"],
+            leaf["signature"],
+            leaf["timestamp"],
+            WITNESS_LEAF_ENTRY_V,
+        )
+    ).encode("utf-8")
+
+
+def witness_leaf_hash(leaf):
+    return hashlib.sha256(b"\x00" + witness_leaf_data(leaf)).hexdigest()
+
+
+def session_leaf_identity(chain):
+    """What the witness's leaf for this session's head MUST say, computed
+    from the head this bundle carries.
+
+    Returns None when the session has no head, or no head signature: with no
+    signing key_id there is nothing to match a leaf's key_id against, and a
+    three-of-four match is not an identity."""
+    head = chain.get("head")
+    if not head:
+        return None
+    sig = head.get("signature")
+    if not sig:
+        return None
+    canonical = head_canonical_bytes(
+        head["session_id"], head["last_sequence"], head["last_entry_hash"]
+    )
+    return {
+        # SHA-256(session_id) is the client's default mapping. An operator
+        # who submitted under --chain-id (a keyed derivation, say) will not
+        # match here, and the row will read not_submitted — which is why the
+        # summary prints the identity it looked for.
+        "chain_id": hashlib.sha256(head["session_id"].encode("utf-8")).hexdigest(),
+        "sequence": head["last_sequence"],
+        "head_hash": hashlib.sha256(canonical).hexdigest(),
+        "key_id": sig["signing_key_id"],
+    }
+
+
+def load_receipts(receipts_dir):
+    """Every virp-witness-receipt/1 file under `receipts_dir`, parsed.
+
+    A file that will not parse, or that is not a receipt, is SKIPPED rather
+    than fatal: this directory is the submitter's working state and may hold
+    partial writes from a run that is happening right now. Returns the list
+    and a list of (path, why) for anything skipped, so the summary can say
+    what was ignored instead of silently ignoring it."""
+    receipts, skipped = [], []
+    if not os.path.isdir(receipts_dir):
+        return receipts, [(receipts_dir, "not a directory")]
+    try:
+        names = sorted(os.listdir(receipts_dir))
+    except OSError as e:
+        return receipts, [(receipts_dir, str(e))]
+    for name in names:
+        if not name.endswith(".witness.json"):
+            continue
+        path = os.path.join(receipts_dir, name)
+        try:
+            with open(path, "rb") as f:
+                doc = json.loads(f.read().decode("utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            skipped.append((path, str(e)))
+            continue
+        if not isinstance(doc, dict) or doc.get("v") != WITNESS_RECEIPT_VERSION:
+            skipped.append((path, "not a %s document" % WITNESS_RECEIPT_VERSION))
+            continue
+        sub, rec = doc.get("submission"), doc.get("receipt")
+        if not isinstance(sub, dict) or not isinstance(rec, dict):
+            skipped.append((path, "receipt is missing submission or receipt"))
+            continue
+        receipts.append((path, doc))
+    return receipts, skipped
+
+
+def match_receipt(receipts, identity):
+    """The receipt whose leaf IS this head's leaf.
+
+    Matched on all four identity fields at once. The file name is never
+    consulted: it is derived from the session id and the sequence and is a
+    convenience for an operator reading the directory, not evidence about
+    what the file contains."""
+    for path, doc in receipts:
+        sub = doc["submission"]
+        if (
+            sub.get("chain_id") == identity["chain_id"]
+            and sub.get("sequence") == identity["sequence"]
+            and sub.get("head_hash") == identity["head_hash"]
+            and sub.get("key_id") == identity["key_id"]
+        ):
+            return path, doc
+    return None, None
+
+
+def witness_get(base_url, path):
+    """One GET. Returns the response body as text, or raises ExportError with
+    the reason — which becomes a manifest row, never a failed export."""
+    url = base_url.rstrip("/") + path
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ExportError("--witness: %s is not an http:// or https:// URL" % url)
+    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=WITNESS_TIMEOUT) as r:  # noqa: S310 (scheme checked above)
+            raw = r.read(WITNESS_MAX_RESPONSE + 1)
+    except Exception as e:  # urllib raises a wide family; the reason is what matters
+        raise ExportError("%s: %s" % (url, e)) from e
+    if len(raw) > WITNESS_MAX_RESPONSE:
+        raise ExportError("%s: response exceeds %d bytes" % (url, WITNESS_MAX_RESPONSE))
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ExportError("%s: response is not UTF-8: %s" % (url, e)) from e
+
+
+def collect_witness(chains, witness_url, receipts_dir):
+    """Resolve, fetch and assemble everything --witness carries.
+
+    Returns (sth_file, rows, notes) where `rows` is one record per session in
+    export order and `notes` are lines for the summary. `sth_file` is None
+    when the witness could not be reached at all — in which case every row is
+    present=false / unreachable, and the export goes on."""
+    notes = []
+    receipts, skipped = load_receipts(receipts_dir)
+    for path, why in skipped:
+        notes.append("ignored %s: %s" % (path, why))
+    notes.append("%d receipt(s) readable under %s" % (len(receipts), receipts_dir))
+
+    # One tree head for the whole export: every proof is against the same
+    # tree, so a reader compares one signature rather than one per session.
+    sth_served = None
+    witness_key_id = ""
+    unreachable = None
+    try:
+        sth_served = witness_get(witness_url, "/v1/sth")
+        sth = json.loads(sth_served)
+        tree_size = int(sth["tree_size"])
+    except (ExportError, ValueError, KeyError, TypeError) as e:
+        unreachable = str(e)
+        sth_served, tree_size = None, 0
+    if sth_served is not None:
+        try:
+            witness_key_id = str(json.loads(witness_get(witness_url, "/v1/pubkey"))["key_id"])
+        except (ExportError, ValueError, KeyError, TypeError) as e:
+            # A claim this script could not collect is an empty claim, not a
+            # failure: nothing is graded from it either way.
+            notes.append("could not read the witness's claimed key_id: %s" % e)
+
+    rows = []
+    for chain in chains:
+        sid = chain["session_id"]
+        row = {"session_id": sid, "present": False, "reason": WITNESS_NOT_SUBMITTED, "proof": None}
+        rows.append(row)
+        if unreachable is not None:
+            row["reason"] = WITNESS_UNREACHABLE
+            row["detail"] = unreachable
+            continue
+        identity = session_leaf_identity(chain)
+        if identity is None:
+            row["reason"] = WITNESS_LOOKUP_FAILED
+            row["detail"] = "this session carries no signed head, so it has no leaf identity"
+            continue
+        path, doc = match_receipt(receipts, identity)
+        if doc is None:
+            row["detail"] = "no receipt under %s matches head_hash %s at sequence %d under key_id %s" % (
+                receipts_dir, identity["head_hash"], identity["sequence"], identity["key_id"]
+            )
+            continue
+
+        rec = doc["receipt"]
+        leaf = {
+            "chain_id": identity["chain_id"],
+            "sequence": identity["sequence"],
+            "head_hash": identity["head_hash"],
+            "key_id": identity["key_id"],
+            "signature": doc["submission"].get("signature", ""),
+            # The receipt's timestamp is the STH timestamp, which the witness
+            # signs at the same instant it stamps the leaf. That is an
+            # implementation fact this script does not take on trust: the
+            # leaf is rebuilt with it and must hash to the leaf_hash the
+            # receipt carries, below. If it ever stops being the same
+            # instant, this check fails closed and the row says lookup_failed
+            # instead of stating a time that is not in the tree.
+            "timestamp": rec.get("timestamp", ""),
+        }
+        try:
+            leaf_index = int(rec["leaf_index"])
+        except (KeyError, TypeError, ValueError) as e:
+            row["reason"] = WITNESS_LOOKUP_FAILED
+            row["detail"] = "%s: unusable leaf_index: %s" % (path, e)
+            continue
+        rebuilt = witness_leaf_hash(leaf)
+        if rebuilt != rec.get("leaf_hash"):
+            row["reason"] = WITNESS_LOOKUP_FAILED
+            row["detail"] = (
+                "%s: the leaf rebuilt from this receipt hashes to %s and the receipt says %s; "
+                "refusing to carry a leaf whose bytes are not the ones in the tree" % (path, rebuilt, rec.get("leaf_hash"))
+            )
+            continue
+        if leaf_index >= tree_size:
+            row["reason"] = WITNESS_LOOKUP_FAILED
+            row["detail"] = "leaf_index %d is outside the witness's current tree of %d leaf/leaves" % (
+                leaf_index, tree_size
+            )
+            continue
+        try:
+            proof_served = witness_get(
+                witness_url, "/v1/proof?leaf_index=%d&tree_size=%d" % (leaf_index, tree_size)
+            )
+            proof = json.loads(proof_served)
+            audit_path = [str(h) for h in proof["inclusion_proof"]]
+        except (ExportError, ValueError, KeyError, TypeError) as e:
+            row["reason"] = WITNESS_LOOKUP_FAILED
+            row["detail"] = str(e)
+            continue
+
+        row["present"] = True
+        row["reason"] = None
+        row["proof"] = {
+            "v": WITNESS_PROOF_VERSION,
+            "session_id": sid,
+            "leaf": leaf,
+            "leaf_index": leaf_index,
+            "tree_size": tree_size,
+            "audit_path": audit_path,
+            "proof_served": proof_served,
+        }
+        notes.append("%s -> leaf %d of tree %d (receipt %s)" % (sid, leaf_index, tree_size, os.path.basename(path)))
+
+    sth_file = None
+    if sth_served is not None:
+        sth_file = {
+            "v": WITNESS_STH_VERSION,
+            "witness_url": witness_url,
+            "witness_key_id": witness_key_id,
+            "fetched_at": created_at_utc(),
+            "sth_served": sth_served,
+        }
+    return sth_file, rows, notes, tree_size
+
+
 def write_json(path, obj):
     data = json.dumps(obj, indent=2, ensure_ascii=True).encode("utf-8") + b"\n"
     with open(path, "xb") as f:
@@ -968,9 +1308,16 @@ def write_bytes(path, data):
 
 def run_export(
     db_path, out_dir, session_ids, seal_path, all_sessions, artifacts=False, key_paths=None,
-    seal_sig_path=None, redacted=False, referenced_dirs=None,
+    seal_sig_path=None, redacted=False, referenced_dirs=None, witness_url=None,
+    witness_receipts=None,
 ):
     referenced_dirs = list(referenced_dirs or [])
+    if witness_receipts is not None and witness_url is None:
+        raise ExportError(
+            "--witness-receipts says where the node's receipts live, and without --witness nothing reads them\n"
+            "  add --witness <url>, or drop --witness-receipts"
+        )
+    witness_receipts = witness_receipts or WITNESS_RECEIPTS_DEFAULT
     if referenced_dirs and not artifacts:
         raise ExportError(
             "--referenced-artifacts carries the files the camera BODIES cite, and a bundle without "
@@ -1054,6 +1401,17 @@ def run_export(
     # verifier cannot confirm the bundle ever cited.
     referenced = collect_referenced(chains, body_store, referenced_dirs) if referenced_dirs else []
 
+    # Asked for AFTER every chain row is in hand and BEFORE anything is
+    # written, like every other input: whatever the witness says, the bundle
+    # that gets written is the same bundle.
+    witness_sth = witness_rows = None
+    witness_notes = []
+    witness_tree_size = 0
+    if witness_url:
+        witness_sth, witness_rows, witness_notes, witness_tree_size = collect_witness(
+            chains, witness_url, witness_receipts
+        )
+
     written = []  # (relative path, sha256)
     os.makedirs(os.path.join(out_dir, "sessions"), exist_ok=False)
     taken = set()
@@ -1119,6 +1477,35 @@ def run_export(
                 written.append((rel, digest))
                 entry["path"] = rel
             manifest["referenced_artifacts"].append(entry)
+    if witness_url:
+        os.makedirs(os.path.join(out_dir, "witness"), exist_ok=False)
+        manifest_witness = {
+            "witness_url": witness_url,
+            "witness_key_id": (witness_sth or {}).get("witness_key_id", ""),
+            "sth": "witness/sth.json",
+            "tree_size": witness_tree_size,
+            "sessions": [],
+        }
+        if witness_sth is not None:
+            digest = write_json(os.path.join(out_dir, "witness/sth.json"), witness_sth)
+            written.append(("witness/sth.json", digest))
+        taken_w = set()
+        for row in witness_rows:
+            entry = {"session_id": row["session_id"], "present": row["present"]}
+            if row["present"]:
+                name = session_file_name(row["session_id"], taken_w)[: -len(".json")] + ".proof.json"
+                rel = "witness/" + name
+                digest = write_json(os.path.join(out_dir, rel), row["proof"])
+                written.append((rel, digest))
+                entry["path"] = rel
+            else:
+                # WHY nothing is carried. A head the witness has never seen is
+                # not_submitted and is a fact about the evidence; unreachable
+                # and lookup_failed are facts about this export run, and the
+                # verifier must not read either as the first.
+                entry["reason"] = row["reason"]
+            manifest_witness["sessions"].append(entry)
+        manifest["witness"] = manifest_witness
     if redacted:
         import docket_mask
 
@@ -1134,6 +1521,15 @@ def run_export(
 
     # Summary.
     print(f"exported {len(chains)} session(s) from {db_path} -> {out_dir}")
+    if witness_url:
+        carried = sum(1 for r in witness_rows if r["present"])
+        print(f"  witness: {witness_url}, tree_size {witness_tree_size}; {carried} of {len(witness_rows)} "
+              f"session head(s) carried a proof")
+        for n in witness_notes:
+            print(f"    {n}")
+        for r in witness_rows:
+            if not r["present"]:
+                print(f"    {r['session_id']}: {r['reason']} — {r.get('detail', '')}")
     d1 = "present" if present["chain_sig"] else "absent"
     if key_entries is None:
         print(f"  D-1 signature columns: {d1}; keys.json: not produced (no public keys live in the database)")
@@ -1250,6 +1646,21 @@ def main(argv=None):
         "unchecked — virp-verify recomputes them. A cited artifact that is not found is listed "
         "present=false, never omitted. Requires --artifacts",
     )
+    p.add_argument(
+        "--witness",
+        metavar="URL",
+        help="witness base URL. For every exported session head, carry the witness's current signed tree "
+             "head and an inclusion proof for that head's leaf. The leaf_index comes from the receipt the "
+             "node-side submitter wrote (see --witness-receipts); the witness API has no route from a "
+             "leaf's identity to its index. THE ONLY FLAG THAT USES THE NETWORK. A head the witness has "
+             "never seen is recorded present=false / not_submitted; nothing here can fail the export.",
+    )
+    p.add_argument(
+        "--witness-receipts",
+        metavar="DIR",
+        help="where the node-side submitter's <head>.witness.json receipts live "
+             f"(default {WITNESS_RECEIPTS_DEFAULT}). Read-only; matched by leaf identity, never by file name.",
+    )
     p.add_argument("--list-sessions", action="store_true", help="list session ids in the database and exit")
     args = p.parse_args(argv)
 
@@ -1271,7 +1682,8 @@ def main(argv=None):
             p.error("give exactly one of --sessions <id>... or --all-sessions")
         return run_export(
             args.db, args.out, args.sessions or [], args.seal, args.all_sessions, args.artifacts, args.keys,
-            args.seal_sig, args.redacted, args.referenced_artifacts,
+            args.seal_sig, args.redacted, args.referenced_artifacts, args.witness,
+            args.witness_receipts,
         )
     except ExportError as e:
         print(f"export_bundle.py: error: {e}", file=sys.stderr)

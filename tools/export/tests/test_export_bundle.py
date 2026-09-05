@@ -648,14 +648,63 @@ class ExportAndVerify(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_stdlib_only(self):
+        """Every import is in the standard library, and the list is spelled out
+        so that adding one is a decision somebody made rather than a thing that
+        happened. `urllib.request` joined it with --witness: still stdlib, and
+        still the only module here that can open a socket — which is why the
+        network posture is asserted separately below."""
         with open(EXPORT) as f:
             src = f.read()
         imports = {line.split()[1] for line in src.splitlines() if line.startswith(("import ", "from "))}
         self.assertEqual(
             imports,
             {"argparse", "base64", "binascii", "datetime", "glob", "hashlib", "json", "os", "re", "sqlite3",
-             "sys", "urllib.parse"},
+             "sys", "urllib.parse", "urllib.request"},
         )
+
+    def test_the_network_is_reached_only_under_witness(self):
+        """The exporter opens a socket for --witness and for nothing else.
+
+        Asserted structurally rather than by running it: every call into
+        urllib.request goes through witness_get, and witness_get is only
+        reachable from collect_witness, which run_export calls only when
+        --witness was given. A future edit that reaches the network from
+        anywhere else has to add a second call site, and this test names it."""
+        with open(EXPORT) as f:
+            lines = f.read().splitlines()
+        callers = [l for l in lines if "urllib.request." in l and not l.strip().startswith("#")]
+        self.assertEqual(len(callers), 2, callers)  # Request(...) and urlopen(...)
+        for l in callers:
+            self.assertTrue(l.startswith("    "), "reached outside a function: %r" % l)
+
+    def test_witness_receipts_without_witness_is_an_error(self):
+        db = os.path.join(self.tmp, "wr.db")
+        build_fixture_db(db)
+        r = run_export("--db", db, "--out", self.out("wr"), "--sessions", SYNTHETIC_SESSION,
+                       "--witness-receipts", self.tmp)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("without --witness nothing reads them", r.stderr)
+
+    def test_an_unreachable_witness_still_produces_a_bundle(self):
+        """The rule the node-side submitter follows, applied here: a third
+        party's endpoint must never be able to stop an export. Every session
+        reads present=false / unreachable, and the bundle is otherwise the
+        bundle it would have been."""
+        db = os.path.join(self.tmp, "wu.db")
+        build_fixture_db(db)
+        out = self.out("wu")
+        # Port 1 on loopback: nothing listens, and the refusal is immediate.
+        r = run_export("--db", db, "--out", out, "--sessions", SYNTHETIC_SESSION,
+                       "--witness", "http://127.0.0.1:1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "manifest.json")) as f:
+            m = json.load(f)
+        rows = m["witness"]["sessions"]
+        self.assertEqual([r["present"] for r in rows], [False])
+        self.assertEqual([r["reason"] for r in rows], ["unreachable"])
+        # No tree head was served, so none is carried — and the manifest still
+        # names where one would live rather than pretending the field is new.
+        self.assertFalse(os.path.exists(os.path.join(out, "witness", "sth.json")))
 
 
 # --- public keys (--keys) ---------------------------------------------------

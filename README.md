@@ -1,4 +1,4 @@
-# virp-verify 0.1.1
+# virp-verify 0.1.2
 
 `virp-verify` reads a VIRP evidence bundle, recomputes its hashes, chain links,
 Ed25519 signatures and RFC 9162 witness proofs, and prints which properties
@@ -15,10 +15,10 @@ your path.
 
 ```sh
 keys=https://raw.githubusercontent.com/nhowardtli/virp-verify/411d008a04eb9a52b3ade9a4afe58ae4b358099b/keys
-mkdir -p virp-verify-0.1.1 && cd virp-verify-0.1.1
+mkdir -p virp-verify-0.1.2 && cd virp-verify-0.1.2
 # Every release asset except the keys — those come from the commit above, which
 # is dated and cannot be replaced, unlike a file attached to a release page.
-curl -fsSL https://api.github.com/repos/nhowardtli/virp-verify/releases/tags/virp-verify-v0.1.1 \
+curl -fsSL https://api.github.com/repos/nhowardtli/virp-verify/releases/tags/virp-verify-v0.1.2 \
   | jq -r '.assets[].browser_download_url' | grep -vE '\.(hex|keys\.json)$' \
   | xargs -n1 curl -fsSLO
 for k in $(grep -oE '[^ ]+\.(hex|keys\.json)$' SHA256SUMS) seal-virp-ad48b20f-2026-09-05.pub; do
@@ -131,26 +131,35 @@ selects it inside the repository, so you pass no version anywhere. The script
 builds both musl targets, skips any you have not added, and writes
 `dist/SHA256SUMS` with one line per target it built.
 
-**The published hash belongs to exactly one target and one commit:**
+**The binary in this release was built at this release's tag.** That is a rule
+now, not a coincidence:
 
-    3de194fd31a7544e7260f04415e8865957403a78690609b0378f277f5277b304
-    x86_64-unknown-linux-musl, built at tag virp-verify-v0.1.0 (commit 01ce2e2)
+```sh
+git checkout virp-verify-v0.1.2
+tools/release/build-verifier.sh
+```
 
-To reproduce it, `git checkout virp-verify-v0.1.0`. The binary in the 0.1.1
-release is that same binary, byte for byte — 0.1.1 changed this README, the
-release assets and the build script, not the verifier — so it still reports
-`virp-verify 0.1.0 (commit 01ce2e2, clean, release)`, and a build from the
-0.1.1 tag is a *different* binary with a different hash by design: the commit
-is compiled in, so the binary cannot misreport where it came from.
+Compare what that writes against the `virp-verify` line of the `SHA256SUMS` you
+downloaded and checked the signature on. The published hash is the one in that
+manifest — this README does not repeat the number, and cannot: the commit is
+compiled into the binary, so a README carrying its own build's hash would
+change the commit that produced the hash it carries. The signed manifest is the
+place that number can live honestly, and `docs/VERIFIER-RELEASE.md` sets out the
+rule and why.
+
+Check out the tag, not `main`. `virp-verify --version` reports the commit it was
+built from and that string is compiled in, so a build from any other commit is a
+different binary with a different hash by design — the binary cannot misreport
+where it came from.
 
 The aarch64 build has **no published hash to compare against**. It is a
 different target: different machine code, linked with the `rust-lld` that ships
 with the toolchain rather than the host `cc`, and stripped by `rustc` at link
 time rather than by GNU `strip`. Its hash is not the x86_64 hash and never
-could be. Reproducibility here is per-target, and only the x86_64-musl figure
-above has been reproduced from separate clean clones at separate paths.
+could be. Reproducibility here is per-target, and only x86_64-musl has been
+reproduced from separate clean clones at separate paths.
 
-A different hash at the right tag and target means the build differed some
+A different hash at the right tag and target means your build differed some
 other way — a different `rustc`, different dependency versions, a different
 `strip` — not "this one is bad".
 

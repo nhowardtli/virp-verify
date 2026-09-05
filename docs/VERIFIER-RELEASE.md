@@ -16,7 +16,7 @@ You can conclude: **the bytes you have are the bytes whoever wrote
 You cannot conclude: that those bytes came from this source, or from anyone
 in particular. A hash published beside the file it describes, on a page
 controlled by whoever produced both, is a download-integrity check and
-nothing more. The 0.1.0 and 0.1.1 releases attach a minisign signature over
+nothing more. Releases from 0.1.0 on attach a minisign signature over
 `SHA256SUMS`, which raises that to "someone holding the seal key vouched for
 this list" and no further: it still does not tell you who holds that key.
 What `build-verifier.sh` writes is unsigned, and this document will not imply
@@ -25,6 +25,48 @@ otherwise.
 If that is not good enough for what you are doing — and for evidence work it
 should not be — **build it yourself** from the source. It takes one command
 and produces the same bytes; see *Reproducibility* below.
+
+## The release rule: the binary is built at the release's tag
+
+**Every release ships a binary built at that release's own tag. No
+exceptions.** If the two ever disagree, the release is wrong and gets
+replaced, not explained.
+
+This rule exists because 0.1.1 broke it. That release's envelope — its tag,
+its notes, its trusted comment — named commit `236e683`, while the binary
+inside reported `0.1.0 (commit 01ce2e2, clean, release)`, because 0.1.1
+deliberately shipped the 0.1.0 binary unchanged. Every individual statement
+was true and the notes said plainly which tag reproduced the hash, but a
+reader checking the first line of a report against the release it came from
+found two different commits and no way to tell, from the release alone,
+which one was the mistake. A provenance chain that needs a paragraph of
+explanation to survive its own first look is not doing its job. 0.1.2
+rebuilds at its own tag and the two agree.
+
+### What the rule forces
+
+The commit is compiled into the binary, so the ordering is fixed and cannot
+be shortened:
+
+1. commit every documentation and source change;
+2. tag that commit;
+3. clone clean, check out the tag, build — twice, at two different paths,
+   and compare;
+4. hash the assets into `SHA256SUMS`;
+5. sign `SHA256SUMS`;
+6. publish.
+
+Step 3 comes after step 2, which is why **this repository's own documents
+never quote the hash of the binary a release ships.** A README that named
+its own build's hash would have to be edited to carry that number, and the
+edit would move the commit that produced it: the number would be stale the
+moment it was written. The signed `SHA256SUMS` is written after the tag
+exists and is the only place that hash can live honestly. Release notes,
+also written after the tag, may repeat it.
+
+So the reproduction instruction in `README.md` is: check out the release's
+tag, build, and compare against the `SHA256SUMS` you downloaded and verified
+the signature on. Not against a number printed beside the instruction.
 
 ## Checking a binary you were given
 
@@ -91,8 +133,8 @@ argument to put it elsewhere, or set `TARGETS` to override the list.
 ### The two targets are built by different machinery
 
 x86_64 links with the host `cc` and is stripped afterwards by the host
-`strip`. That pipeline produced the published 0.1.0 hash and is left exactly
-as it was.
+`strip`. That pipeline has produced every published hash so far and is left
+exactly as it is.
 
 aarch64 cannot use either on an x86_64 host: GNU `strip` does not recognise
 the format, and the host `cc` cannot link for another architecture. So it

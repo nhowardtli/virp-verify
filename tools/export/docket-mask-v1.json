@@ -1,0 +1,537 @@
+{
+  "policy": "docket-mask-v1",
+  "description": "The ONE pattern table. The Rust matcher (crates/docket-redact) and the Python matcher (tools/export/docket_mask.py) both read this file and nothing else; neither carries a pattern of its own. Every fixture in tests/corpus/ is asserted against by both, so a divergence fails one side's suite.",
+  "marker_prefix": "[REDACTED: ",
+  "marker_suffix": "]",
+  "unclassifiable_reason": "unclassifiable",
+  "already_redacted": [
+    "[REDACTED: ",
+    "<removed>"
+  ],
+  "unclassifiable_max_bytes": 1048576,
+  "regex_dialect": {
+    "note": "Restricted to the intersection of Rust `regex` 1.x and Python `re`: no lookaround, no backreferences, ASCII classes written out rather than \\d/\\w. Patterns are matched against ONE line with its terminator already removed, so `$` means the same thing in both engines (Python's `$` would otherwise also match before a trailing newline). An inline flag group must be the FIRST thing in the pattern: Python's `re` rejects `(?i)` anywhere else, while Rust's `regex` accepts it mid-pattern. Write one leading `(?i)` and group the alternation.",
+    "case_insensitive": "inline (?i) only"
+  },
+  "blocks": [
+    {
+      "id": "pem-private-key",
+      "category": "private-key-block",
+      "open_contains": [
+        "-----BEGIN ",
+        "PRIVATE KEY-----"
+      ],
+      "close_contains": [
+        "-----END",
+        "PRIVATE KEY-----"
+      ],
+      "note": "BEGIN and END lines are kept; the interior collapses to one marker line. An unterminated block redacts through end of body (fail-closed)."
+    }
+  ],
+  "rules": [
+    {
+      "id": "keep-service-password-encryption",
+      "category": "none",
+      "family": "vendor",
+      "mode": "line-first",
+      "action": "keep",
+      "regex": "(?i)^[ \\t]*service[ \\t]+password-encryption[ \\t]*$",
+      "literals": [
+        "password-encryption"
+      ],
+      "note": "Carries no value. Same exception the cisco driver scrub makes."
+    },
+    {
+      "id": "keep-key-chain-header",
+      "category": "none",
+      "family": "vendor",
+      "mode": "line-first",
+      "action": "keep",
+      "regex": "(?i)^[ \\t]*key[ \\t]+chain([ \\t]|$)",
+      "literals": [
+        "key"
+      ],
+      "note": "`key chain NAME` is a block header, not a secret."
+    },
+    {
+      "id": "keep-key-chain-index",
+      "category": "none",
+      "family": "vendor",
+      "mode": "line-first",
+      "action": "keep",
+      "regex": "(?i)^[ \\t]*key[ \\t]+[0-9]+[ \\t]*$",
+      "literals": [
+        "key"
+      ],
+      "note": "`key 1` alone is a key-chain index. `key 0 12345678` is not, and falls through."
+    },
+    {
+      "id": "cisco-enable-secret",
+      "category": "enable-secret",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*enable[ \\t]+secret[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "enable"
+      ],
+      "group": 2
+    },
+    {
+      "id": "cisco-enable-password",
+      "category": "enable-password",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*enable[ \\t]+password[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "enable"
+      ],
+      "group": 2
+    },
+    {
+      "id": "cisco-username-secret",
+      "category": "username-secret",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*username[ \\t]+[^ \\t]+[ \\t]+(?:privilege[ \\t]+[0-9]+[ \\t]+)?(?:password|secret)[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "username"
+      ],
+      "group": 2
+    },
+    {
+      "id": "cisco-type7",
+      "category": "type7",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*(?:password|secret)[ \\t]+7[ \\t]+)([0-9A-Fa-f]+)[ \\t]*$",
+      "literals": [
+        "password",
+        "secret"
+      ],
+      "group": 2,
+      "note": "Named separately from the generic password line so the marker says which encoding was there."
+    },
+    {
+      "id": "cisco-password-line",
+      "category": "password",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*(?:password|passwd|secret)[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "password",
+        "passwd",
+        "secret"
+      ],
+      "group": 2
+    },
+    {
+      "id": "asa-ldap-login-password",
+      "category": "password",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*ldap-login-password[ \\t]+)(.+)$",
+      "literals": [
+        "ldap-login-password"
+      ],
+      "group": 2
+    },
+    {
+      "id": "asa-snmp-host",
+      "category": "snmp-host",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*snmp-server[ \\t]+host[ \\t]+[^ \\t]+[ \\t]+[0-9.]+[ \\t]+)(.+)$",
+      "literals": [
+        "snmp-server"
+      ],
+      "group": 2,
+      "note": "ASA form keeps interface + IP. The IOS form below keeps only the host token."
+    },
+    {
+      "id": "cisco-snmp-host",
+      "category": "snmp-host",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*snmp-server[ \\t]+host[ \\t]+[^ \\t]+[ \\t]+)(.+)$",
+      "literals": [
+        "snmp-server"
+      ],
+      "group": 2,
+      "note": "Everything after the host is positional and ends in a community string."
+    },
+    {
+      "id": "cisco-snmp-community",
+      "category": "snmp-community",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*snmp-server[ \\t]+community[ \\t]+)([^ \\t]+)",
+      "literals": [
+        "snmp-server"
+      ],
+      "group": 2,
+      "note": "Only the community token; RO/RW/view/ACL stay diagnostic."
+    },
+    {
+      "id": "cisco-isakmp-key",
+      "category": "pre-shared-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*crypto[ \\t]+isakmp[ \\t]+key[ \\t]+(?:[0-9][ \\t]+)?)([^ \\t]+)",
+      "literals": [
+        "isakmp"
+      ],
+      "group": 2,
+      "note": "Only the key token; the peer address after it stays visible."
+    },
+    {
+      "id": "ios-keyring-pre-shared-key",
+      "category": "pre-shared-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*pre-shared-key[ \\t]+(?:address[ \\t]+[^ \\t]+[ \\t]+)?key[ \\t]+)(.+)$",
+      "literals": [
+        "pre-shared-key"
+      ],
+      "group": 2
+    },
+    {
+      "id": "generic-pre-shared-key",
+      "category": "pre-shared-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*(?:pre-shared-key|wpa-psk)[ \\t]+)(.+)$",
+      "literals": [
+        "pre-shared-key",
+        "wpa-psk"
+      ],
+      "group": 2
+    },
+    {
+      "id": "asa-aaa-server-inline",
+      "category": "aaa-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*aaa-server[ \\t]+[^ \\t]+[ \\t]+\\([^)]*\\)[ \\t]+host[ \\t]+[^ \\t]+[ \\t]+)(.+)$",
+      "literals": [
+        "aaa-server"
+      ],
+      "group": 2,
+      "note": "Legacy inline form: everything after the host IP is the key (plus optional timeout)."
+    },
+    {
+      "id": "aaa-server-key",
+      "category": "aaa-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*(?:tacacs-server|radius-server|server-private|server)[ \\t].*?[ \\t]key[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "server"
+      ],
+      "group": 2
+    },
+    {
+      "id": "asa-failover-key",
+      "category": "failover-key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*failover[ \\t]+key[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "failover"
+      ],
+      "group": 2
+    },
+    {
+      "id": "cisco-key-string",
+      "category": "key-string",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*key-string[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "key-string"
+      ],
+      "group": 2
+    },
+    {
+      "id": "routing-authentication-key",
+      "category": "routing-auth",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^(.*?[ \\t]authentication-key[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "authentication-key"
+      ],
+      "group": 2
+    },
+    {
+      "id": "routing-md5",
+      "category": "routing-auth",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^(.*?[ \\t]md5[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "md5"
+      ],
+      "group": 2,
+      "note": "`ip ospf message-digest-key 1 md5 7 …`. `ip ospf authentication message-digest` has no md5 token and is untouched."
+    },
+    {
+      "id": "hsrp-vrrp-authentication",
+      "category": "hsrp-auth",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*(?:standby|vrrp)[ \\t].*?[ \\t]authentication[ \\t]+)(.+)$",
+      "literals": [
+        "standby",
+        "vrrp"
+      ],
+      "group": 2
+    },
+    {
+      "id": "nhrp-authentication",
+      "category": "nhrp-auth",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*ip[ \\t]+nhrp[ \\t]+authentication[ \\t]+)(.+)$",
+      "literals": [
+        "nhrp"
+      ],
+      "group": 2
+    },
+    {
+      "id": "fortigate-set-secret",
+      "category": "fortigate-secret",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*set[ \\t]+[^ \\t]*(?:password|passwd|passphrase|secret|psksecret|psk|key)[ \\t]+(?:ENC[ \\t]+)?)(.+)$",
+      "literals": [
+        "set"
+      ],
+      "group": 2,
+      "note": "FortiOS `set password ENC …`, `set psksecret ENC …`, `set passwd …`. The ENC keyword is kept so the reader can see the form."
+    },
+    {
+      "id": "panos-phash",
+      "category": "panos-phash",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^(.*?[ \\t]phash[ \\t]+)(.+)$",
+      "literals": [
+        "phash"
+      ],
+      "group": 2,
+      "note": "PAN-OS set-format `set mgt-config users admin phash $1$…`."
+    },
+    {
+      "id": "xml-secret-element",
+      "category": "xml-secret",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^(.*<(?:phash|password|passwd|secret|psk|pre-shared-key|auth-key|authkey|shared-key)>)([^<]*)(</)",
+      "literals": [
+        "<phash>",
+        "<password>",
+        "<passwd>",
+        "<secret>",
+        "<psk>",
+        "<pre-shared-key>",
+        "<auth-key>",
+        "<authkey>",
+        "<shared-key>"
+      ],
+      "group": 2,
+      "note": "PAN-OS/Junos XML config export. Element name kept, text content redacted."
+    },
+    {
+      "id": "leading-key",
+      "category": "key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^([ \\t]*key[ \\t]+(?:[0-9][ \\t]+)?)(.+)$",
+      "literals": [
+        "key"
+      ],
+      "group": 2,
+      "note": "tacacs/radius server-block and key-chain shape. The two keep-rules above carve out the header and index forms."
+    },
+    {
+      "id": "mid-line-key",
+      "category": "key",
+      "family": "vendor",
+      "mode": "line-first",
+      "regex": "(?i)^(.*?[ \\t]key[ \\t]+[0-9][ \\t]+)(.+)$",
+      "literals": [
+        "key"
+      ],
+      "group": 2,
+      "note": "Real IOS puts AAA keys past token 0. Narrower than the C scrub's mid-line `key` rule, which redacts after ANY mid-line `key` token: this masker also runs over console prose and banner text, where `… has no key id` is a sentence, not a credential. Requiring the explicit encryption-type digit (`key 7 …`) keeps the config shape and drops the prose. The unambiguous shapes are covered by the more specific rules above."
+    },
+    {
+      "id": "authorization-header",
+      "category": "authorization-header",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)(authorization[ \\t]*:[ \\t]*(?:bearer|basic|token|apikey)[ \\t]+)([^ \\t\"',;]+)",
+      "literals": [
+        "authorization"
+      ],
+      "group": 2
+    },
+    {
+      "id": "cli-option-secret",
+      "category": "cli-option-secret",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)(--[a-z0-9-]*(?:password|passwd|passphrase|secret|token|api-key|apikey|psk)(?:=|[ \\t]+))([^ \\t\"',;]+)",
+      "literals": [
+        "--"
+      ],
+      "group": 2,
+      "note": "A credential passed as a command-line option: `--password x`, `--api-key=…`, `--psksecret …`. Found on the 313-human reference bundle, inside a gate_rejection record's `command` field, where the value sat behind a SPACE rather than a `:` or `=` and so reached neither the labelled-secret rule nor any vendor line rule. `--password-file /etc/x` does not match: the keyword must end the option name."
+    },
+    {
+      "id": "label-password",
+      "category": "password",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*(?:password|passwd)[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "password",
+        "passwd"
+      ],
+      "group": 2
+    },
+    {
+      "id": "label-secret",
+      "category": "secret",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*secret[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "secret"
+      ],
+      "group": 2
+    },
+    {
+      "id": "label-token",
+      "category": "token",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*token[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "token"
+      ],
+      "group": 2
+    },
+    {
+      "id": "label-api-key",
+      "category": "api-key",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*(?:api[_-]?key|apikey)[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "apikey",
+        "api_key",
+        "api-key"
+      ],
+      "group": 2
+    },
+    {
+      "id": "label-snmp-credential",
+      "category": "snmp-credential",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*(?:authpass|privpass|cryptopass|community)[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "authpass",
+        "privpass",
+        "cryptopass",
+        "community"
+      ],
+      "group": 2,
+      "note": "The LibreNMS device-record family the C scrubber added after measuring a credential crossing both barriers."
+    },
+    {
+      "id": "label-psk",
+      "category": "psk",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)([A-Za-z0-9_.-]*psk[\"']?[ \\t]*[:=][ \\t]*[\"']?)([^\"',;}\\]\\[ \\t]+)",
+      "literals": [
+        "psk"
+      ],
+      "group": 2
+    },
+    {
+      "id": "jwt",
+      "category": "jwt",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "()(eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,})",
+      "literals": [
+        "eyj"
+      ],
+      "group": 2,
+      "note": "Three base64url segments beginning with a base64url `{\"`. Unlabelled — a JWT is self-identifying."
+    },
+    {
+      "id": "aws-access-key-id",
+      "category": "aws-key-id",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "()((?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ABIA|ACCA)[A-Z0-9]{16})",
+      "literals": [
+        "akia",
+        "asia",
+        "agpa",
+        "aida",
+        "aroa",
+        "aipa",
+        "anpa",
+        "anva",
+        "abia",
+        "acca"
+      ],
+      "group": 2
+    },
+    {
+      "id": "labelled-long-run",
+      "category": "long-secret-run",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)((?:key|credential|passcode|auth)[A-Za-z0-9_.-]*[\"']?[ \\t]*[:=][ \\t]*[\"']?)([A-Za-z0-9+/=_-]{32,})",
+      "literals": [
+        "key",
+        "credential",
+        "passcode",
+        "auth"
+      ],
+      "exclude_label": "(?i)key[_-]?id[\"']?[ \\t]*(?:[:=][ \\t]*[\"']?|[ \\t])$",
+      "group": 2,
+      "note": "32+ char hex/base64 run ADJACENT TO a credential-like label. The label is required: an unlabelled base64 chunk (an image, a certificate body) is not a secret shape. `exclude_label` drops the IDENTIFIER forms: approver_key_id, signing_key_id, producer_key_id, chain_sig_key_id. A key id names which key was used; it is not the key, and hiding it takes away the examiner's ability to tell one signer from another. Measured on the reference bundles, this alone accounted for every remaining hit. COMMITMENT labels are likewise deliberately absent — hash, digest, signature, sig, sha256, mac. A `command_hash` or a `chain_entry_hash` is a 64-hex run next to a label, and it is the opposite of a secret: it is the thing an examiner came to read. Measured on the 313-human reference bundle, including them withheld 181 of 884 bodies, 209 of the 214 hits being `command_hash`."
+    },
+    {
+      "id": "labelled-long-run-whitespace",
+      "category": "long-secret-run",
+      "family": "generic",
+      "mode": "sweep",
+      "regex": "(?i)((?:key|token|secret|credential)[A-Za-z0-9_.-]*[ \\t]+)([A-Za-z0-9+/=]{32,})",
+      "literals": [
+        "key",
+        "token",
+        "secret",
+        "credential"
+      ],
+      "exclude_label": "(?i)key[_-]?id[\"']?[ \\t]*(?:[:=][ \\t]*[\"']?|[ \\t])$",
+      "group": 2,
+      "note": "Same shape with whitespace instead of a `:`/`=` separator."
+    }
+  ],
+  "prefilter": {
+    "field": "literals",
+    "rule": "A rule is TRIED only when the lowercased line contains at least one of its `literals`. Every literal listed is genuinely REQUIRED by that rule's regex, so the prefilter can only skip attempts that would have failed — it can never change an output. Its purpose is cost, not semantics: Python's `re` backtracks and Rust's `regex` does not, so without it a megabyte-long line with no separators costs the two matchers wildly different amounts of time for the same answer. Matching is case-insensitive on both sides (the line is lowercased before the test), which makes the filter a superset of each rule's own case rules and keeps it sound for the case-SENSITIVE rules too."
+  },
+  "exclusions": {
+    "field": "exclude_label",
+    "rule": "An optional regex tested against capture group 1 (the label and its separator) AFTER the rule matches. When it matches, that occurrence is SKIPPED and scanning continues past it — the rule simply does not apply there. This is how a label vocabulary can say 'key' without also saying 'key_id', in a dialect with no lookaround."
+  }
+}

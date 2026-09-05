@@ -58,6 +58,12 @@ pub struct Limits {
     /// The D-0 seal document. The 350-session reference seal is 57 KB, about
     /// 166 bytes per listed session, so this allows ~100,000 sessions.
     pub seal_bytes: u64,
+    /// One witness file: `witness/sth.json` or one `.proof.json`. A tree head
+    /// file is ~400 bytes; a proof file is a leaf plus an audit path of
+    /// ceil(log2(tree_size)) 64-hex nodes, so a log of a billion leaves gives
+    /// a ~3 KB file. A megabyte is four hundred times the largest shape the
+    /// format can produce, and still bounds a hostile one.
+    pub witness_file_bytes: u64,
     /// The seal's detached `.minisig` file. A real one is ~330 bytes (two
     /// base64 lines and two comment lines).
     pub seal_sig_bytes: u64,
@@ -123,6 +129,7 @@ impl Default for Limits {
             manifest_bytes: 16 * MIB,
             keys_bytes: MIB,
             seal_bytes: 16 * MIB,
+            witness_file_bytes: MIB,
             seal_sig_bytes: 64 * KIB,
             session_bytes: 64 * MIB,
             artifact_body_bytes: 16 * MIB,
@@ -155,6 +162,7 @@ impl Limits {
             manifest_bytes: u64::MAX,
             keys_bytes: u64::MAX,
             seal_bytes: u64::MAX,
+            witness_file_bytes: u64::MAX,
             seal_sig_bytes: u64::MAX,
             session_bytes: u64::MAX,
             artifact_body_bytes: u64::MAX,

@@ -8,9 +8,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use docket_bundle::bundle::{Bundle, BundleReport, SealKeyCheck};
+use docket_bundle::bundle::{Bundle, BundleReport, SealKeyCheck, WitnessCheck};
 use docket_bundle::verify::{Status, Verdict};
+use docket_bundle::witness::{LiveConsistency, WitnessOutcome};
 use docket_bundle::{Limits, MinisignPublicKey, MinisignSignature};
+
+mod witness_http;
 
 /// One line naming the build that produced a report: crate version, the
 /// commit it was built from, whether the tree was clean at build time, and
@@ -48,6 +51,7 @@ virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
     virp-verify [--json] [--pin FILE]... [--producer-key FILE]...
+                [--witness-key FILE]... [--witness-url URL]
                 [--fail-on-coverage] [--show-path] [--max-sessions N]
                 [--max-entries N] [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
@@ -81,6 +85,29 @@ OPTIONS:
                          O-Node chain key (--pin) — one never stands in for
                          the other. Without this flag the producer signature
                          is UNVERIFIABLE and producer trust UNESTABLISHED.
+    --witness-key FILE   witness PUBLIC key, for a bundle carrying witness
+                         material (exporter --witness). Two forms, the same two
+                         --pin reads: 64 hex characters, or a docket keys.json
+                         object. Repeatable, for a bundle witnessed by more
+                         than one witness. Must arrive OUT OF BAND: the bundle
+                         records the key id the WITNESS CLAIMED for itself, and
+                         a dishonest witness claims whatever it signed with, so
+                         nothing inside a bundle can establish which key is the
+                         right one. Without this flag the witness property is
+                         UNVERIFIABLE and witness trust UNESTABLISHED.
+    --witness-url URL    OFF BY DEFAULT. Fetch a fresh signed tree head and a
+                         consistency proof from the carried tree_size to the
+                         current one, and report witness_consistency: is the
+                         tree the carried proof was checked against still a
+                         prefix of that log? This is the ONLY flag that makes
+                         this verifier touch a network; witness: VERIFIED needs
+                         no network and never gets one. A witness that cannot
+                         be reached is UNVERIFIABLE with the reason — never a
+                         pass, and never a failure, because anyone who can drop
+                         a packet must not be able to manufacture an alarm.
+                         PLAIN HTTP ONLY (no TLS stack travels in this binary):
+                         for an https witness, point this at a local terminator
+                         or tunnel.
     --fail-on-coverage   also exit nonzero (6) when the bundle-level capture
                          completeness grades INTERRUPTED / UNEXPLAINED or
                          FAILED — matching the producer's own opt-in flag.
@@ -146,6 +173,14 @@ WHAT IS RECOMPUTED, AND WHAT IS NOT:
     never from the unsigned manifest. A bundle that does not carry them grades
     ABSENT, which is not a pass.
 
+    When a bundle carries WITNESS material (exporter --witness), the leaf's
+    RFC 9162 inclusion proof is recomputed to the root of the carried signed
+    tree head, and that head's Ed25519 signature is checked under the witness
+    key supplied out of band. What that proves is bounded and stated in full
+    beside the report: the head was in that log, at that tree size, at the
+    time the witness stamped it, under that key. It says nothing about whether
+    the entries are true, and it never upgrades the chain verdict.
+
     Still NOT recomputed: prev_segment_sha256 as a chain of files;
     sensor_key_sha256, whose digest is over the key as the SEI presents it;
     and device_chain.anchor_sha256, whose preimage is the examiner's own
@@ -206,6 +241,8 @@ fn main() -> ExitCode {
     let mut producer_key_paths: Vec<PathBuf> = Vec::new();
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
+    let mut witness_key_paths: Vec<PathBuf> = Vec::new();
+    let mut witness_url: Option<String> = None;
     let mut fail_on_coverage = false;
     let mut show_path = false;
     let mut pending: Option<&'static str> = None;
@@ -230,6 +267,19 @@ fn main() -> ExitCode {
                     seal_sig_path = Some(PathBuf::from(&arg));
                     continue;
                 }
+                "--witness-key" => {
+                    witness_key_paths.push(PathBuf::from(&arg));
+                    continue;
+                }
+                "--witness-url" => {
+                    let Some(u) = arg.to_str() else {
+                        eprintln!("virp-verify: --witness-url is not valid UTF-8\n");
+                        eprint!("{USAGE}");
+                        return ExitCode::from(2);
+                    };
+                    witness_url = Some(u.to_owned());
+                    continue;
+                }
                 _ => {}
             }
             let Some(n) = arg.to_str().and_then(|s| s.parse::<usize>().ok()) else {
@@ -248,7 +298,8 @@ fn main() -> ExitCode {
             Some("--fail-on-coverage") => fail_on_coverage = true,
             Some("--show-path") => show_path = true,
             Some(
-                f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"),
+                f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"
+                | "--witness-key" | "--witness-url"),
             ) => {
                 // Borrowed from USAGE rather than from `arg`, so the flag name
                 // outlives this iteration without an allocation.
@@ -258,6 +309,8 @@ fn main() -> ExitCode {
                     "--pin" => "--pin",
                     "--producer-key" => "--producer-key",
                     "--seal-key" => "--seal-key",
+                    "--witness-key" => "--witness-key",
+                    "--witness-url" => "--witness-url",
                     _ => "--seal-sig",
                 });
             }
@@ -320,6 +373,16 @@ fn main() -> ExitCode {
             }
         }
     }
+    let mut witness_keys = Vec::new();
+    for p in &witness_key_paths {
+        match docket_bundle::read_key_file(p, &limits) {
+            Ok(keys) => witness_keys.extend(keys),
+            Err(e) => {
+                eprintln!("virp-verify: --witness-key: {}: {e}", p.display());
+                return ExitCode::from(2);
+            }
+        }
+    }
     let seal_key = match &seal_key_path {
         None => None,
         Some(p) => match read_minisign(p, "--seal-key", MinisignPublicKey::from_text) {
@@ -352,7 +415,19 @@ fn main() -> ExitCode {
         key,
         signature: seal_sig.as_ref(),
     });
-    let report = bundle.verify_with(check.as_ref(), &producer_keys);
+    // The one place this binary touches a network, and only when asked. The
+    // fetch happens AFTER the bundle is read and graded-in-principle, so an
+    // unreachable witness can never stop a bundle being verified — it can
+    // only leave one extra row UNVERIFIABLE with the reason.
+    let live = witness_url.as_deref().map(|url| fetch_consistency(url, &bundle));
+    let report = bundle.verify_with_witness(
+        check.as_ref(),
+        &producer_keys,
+        &WitnessCheck {
+            keys: &witness_keys,
+            live: live.as_ref(),
+        },
+    );
 
     if json {
         match serde_json_string(&report) {
@@ -365,7 +440,14 @@ fn main() -> ExitCode {
     } else {
         print!(
             "{}",
-            render_text(&path, &bundle, &report, seal_key.is_some(), show_path)
+            render_text(
+                &path,
+                &bundle,
+                &report,
+                seal_key.is_some(),
+                !witness_keys.is_empty(),
+                show_path
+            )
         );
     }
 
@@ -426,11 +508,100 @@ fn status_line(name: &str, status: &Status, detail: &str) -> String {
     format!("  {name:<22} {:<38} {detail}{extra}\n", status.label())
 }
 
+/// Ask the witness for a head as it stands NOW, and for the proof that the
+/// tree the bundle carries is a prefix of it.
+///
+/// Every failure returns the reason as a `String`, which the grading reports
+/// verbatim as UNVERIFIABLE. Nothing here can produce a pass, and nothing here
+/// can produce a failure: an endpoint that is down, slow or lying about its
+/// own key must not be able to change what the carried proof already says.
+fn fetch_consistency(url: &str, bundle: &Bundle) -> Result<LiveConsistency, String> {
+    let Some(material) = &bundle.witness else {
+        return Err("this bundle carries no witness material, so there is no tree to check against".to_owned());
+    };
+    let carried = material.sth.as_ref().map_err(String::clone)?;
+    let fresh_sth_served = witness_http::get(url, "/v1/sth")?;
+    let fresh = docket_bundle::parse_sth(&fresh_sth_served).map_err(|e| format!("{url}/v1/sth: {e}"))?;
+    let body = witness_http::get(
+        url,
+        &format!("/v1/consistency?first={}&second={}", carried.tree_size, fresh.tree_size),
+    )?;
+    let parsed = docket_bundle::parse_consistency(&body).map_err(|e| format!("{url}/v1/consistency: {e}"))?;
+    if parsed.first != carried.tree_size || parsed.second != fresh.tree_size {
+        return Err(format!(
+            "{url}/v1/consistency answered about {} -> {} when asked about {} -> {}",
+            parsed.first, parsed.second, carried.tree_size, fresh.tree_size
+        ));
+    }
+    Ok(LiveConsistency {
+        fresh_sth_served,
+        proof: parsed.consistency_proof,
+        served_first_root: parsed.first_root,
+        url: url.to_owned(),
+    })
+}
+
+/// The witness's own clock on a session's head, rendered as a THIRD time and
+/// never merged with either of the others.
+///
+/// The O-Node's clock is on the entries and is the operator's machine. The
+/// witness's is a third party's assertion about when it first saw the head.
+/// They answer different questions, they can disagree, and a report that
+/// averaged them or picked one would have destroyed the only interesting
+/// thing about having two.
+fn render_times(out: &mut String, chain_last_ns: Option<u64>, w: Option<&WitnessOutcome>) {
+    use std::fmt::Write as _;
+    let existed_by = w.and_then(|w| w.head_existed_by.as_deref());
+    if chain_last_ns.is_none() && existed_by.is_none() {
+        return;
+    }
+    let onode = match chain_last_ns {
+        Some(ns) => format!("O-Node clock {}", rfc3339_from_ns(ns)),
+        None => "O-Node clock unavailable".to_owned(),
+    };
+    let witness = match existed_by {
+        Some(t) => format!("head existed by {t} (witness clock)"),
+        None => "no witness time".to_owned(),
+    };
+    let _ = writeln!(out, "  {:<22} {onode} | {witness}", "times");
+}
+
+/// Nanoseconds since the epoch as RFC 3339 UTC, without a date library.
+///
+/// Civil-date arithmetic from the days-since-epoch, valid across the whole
+/// range a `u64` of nanoseconds can express (1970 to 2554). Written out
+/// rather than pulled in: one dependency for one line of output would be a
+/// poor trade in a binary whose dependency tree is the thing it advertises.
+fn rfc3339_from_ns(ns: u64) -> String {
+    let secs = ns / 1_000_000_000;
+    let millis = (ns % 1_000_000_000) / 1_000_000;
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    // Howard Hinnant's civil_from_days, era-based.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60
+    )
+}
+
 fn render_text(
     path: &std::path::Path,
     bundle: &Bundle,
     report: &BundleReport,
     seal_key_supplied: bool,
+    witness_key_supplied: bool,
     show_path: bool,
 ) -> String {
     use std::fmt::Write as _;
@@ -547,6 +718,29 @@ fn render_text(
             report.producer_key_ids.join(", ")
         );
     }
+    // Named only when the bundle actually carries witness material, so a
+    // report on an unwitnessed bundle reads exactly as it did before this
+    // feature existed.
+    if let Some(w) = &bundle.witness {
+        let _ = writeln!(
+            out,
+            "witness: {} claims key_id {} — a CLAIM carried in the bundle, never a trust anchor",
+            w.manifest.witness_url, w.sth_file.witness_key_id
+        );
+        if witness_key_supplied {
+            let _ = writeln!(
+                out,
+                "         checked under {} examiner-supplied witness key(s)",
+                report.witness_key_ids.len()
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "         none supplied — witness trust cannot be established without an examiner key \
+                 (--witness-key)"
+            );
+        }
+    }
     let _ = writeln!(out, "secrets: none — this verifier holds no K_chain and no private key");
     let _ = writeln!(out);
 
@@ -587,6 +781,41 @@ fn render_text(
                 .unwrap_or_default();
             out.push_str(&status_line("referenced_artifact_binding", binding, &detail));
         }
+        // A third party's log, and the third clock that comes with it. Its
+        // own rows, deliberately: nothing here is a statement about the
+        // chain's bytes, and nothing here can answer for them.
+        if let Some(w) = &s.witness {
+            out.push_str(&status_line("witness", &w.status, &w.detail));
+            // Only when there IS material. A bundle the witness never saw has
+            // no tree head to have trusted or not trusted, and a row reading
+            // "UNESTABLISHED" beside an ABSENT property would invite the
+            // reading that something was checked and came up short.
+            if !matches!(w.status, Status::Absent) {
+                let _ = writeln!(
+                    out,
+                    "  {:<22} {:<38} {}",
+                    "witness_trust",
+                    w.trust.label(),
+                    w.submitter_signature
+                        .as_deref()
+                        .map(|d| format!("submitter signature over the leaf: {d}"))
+                        .unwrap_or_default()
+                );
+            }
+            if let Some(c) = &s.witness_consistency {
+                out.push_str(&status_line("witness_consistency", c, "carried tree vs the log now"));
+            }
+        }
+        // The O-Node's own clock, read from the last entry of this session's
+        // chain — the newest thing the operator's machine stamped, which is
+        // the moment the witness's timestamp is worth comparing against.
+        let onode_ns = bundle
+            .sessions
+            .iter()
+            .find(|c| c.session_id == r.session_id)
+            .and_then(|c| c.entries.last())
+            .map(|e| e.fields.timestamp_ns);
+        render_times(&mut out, onode_ns, s.witness.as_ref());
         // The two signer axes, rendered separately and never merged: whether
         // the cryptography held, and whether the key that checked it was
         // examiner-pinned.
@@ -742,6 +971,11 @@ fn render_text(
             ra.detail
         );
     }
+    // Beside the verdict, never inside it. A chain nobody witnessed is
+    // exactly as internally consistent as it was before witnessing existed.
+    if let Some(w) = &b.witness {
+        let _ = writeln!(out, "  {:<28} {:<28} {}", "witness", w.status.label(), w.detail);
+    }
     let _ = writeln!(out);
     let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());
     let _ = writeln!(out);
@@ -809,6 +1043,25 @@ fn render_text(
         out,
         "What referenced_artifact_binding covers: the artifacts a camera record cites by digest — the segment video (segment_sha256), the validator's own output about it (sensor_signature.validator_output_sha256), and from /6 the device leaf certificate in DER (sensor_signature.device_chain.leaf_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256 (the digest is over the key as the SEI presents it, which the bundle does not carry), and device_chain.anchor_sha256 (the pinned CA is the examiner's own file, held out of band, never shipped inside the evidence it anchors)."
     );
+    // Stated in full, and stated even when nothing was witnessed: a reader
+    // who sees "witness VERIFIED" somewhere must be able to find here exactly
+    // how much that word is carrying.
+    let _ = writeln!(
+        out,
+        "What witness VERIFIED means, exactly: this session's head was present in the named witness's append-only log at tree_size N, at the time that witness stamped on the leaf, under the witness key you supplied out of band. The inclusion proof was recomputed here (RFC 9162) to the root of a tree head whose Ed25519 signature verified under that key, and the leaf's head_hash, sequence and key_id were compared against this session's own head."
+    );
+    let _ = writeln!(
+        out,
+        "  It says NOTHING about whether the entries under that head are true, or about what the video shows, or about which physical device produced any of it. It does not replace the chain verdict and cannot raise it: a witnessed chain and an unwitnessed one are equally consistent internally, and the witness result reports beside the verdict, never inside it. The one exception is FAILED — a proof that does not recompute is a cryptographic inconsistency in the bundle, and that does make the verdict FAILED."
+    );
+    let _ = writeln!(
+        out,
+        "  ABSENT means the witness has no leaf for this head (the manifest's reason says why) and is not a failure of anything. UNVERIFIABLE means either that no --witness-key was supplied, or that the carried tree head signs under a key other than the one you pinned — the second is the trust-not-established case, the CRYPTOGRAPHICALLY-CONSISTENT (exit 5) situation applied to the witness, and deliberately not FAILED."
+    );
+    let _ = writeln!(
+        out,
+        "  The witness's timestamp is the WITNESS'S ASSERTION about when it first saw the head. It is reported as a third clock beside the O-Node's and never merged with it. What would bound a witness that lies about time is publication of its tree heads somewhere it cannot retract them, and a second witness; neither is checked here. witness_consistency (--witness-url) checks only that the carried tree is still a prefix of the log that endpoint serves now."
+    );
     let _ = writeln!(
         out,
         "A report with no boundary results comes from a verifier that does not implement these checks (NOT GRADED) — a different statement from UNVERIFIABLE, which is graded from the evidence."
@@ -829,15 +1082,22 @@ fn render_text(
         out,
         "  milestones (unsigned in D-1), artifact bodies the bundle does not carry, and anything before the chain's capture boundary."
     );
-    // How a reader reproduces this report. Named last because it is the
-    // instruction someone acts on after reading everything above it.
-    let _ = writeln!(
-        out,
-        "Reproduce this report: virp-verify {} (add --pin <examiner-key.json> to establish signer trust), \
-         using {}",
-        docket_bundle::bundle_display_name(path),
-        build_identity()
+    // The instruction someone acts on after reading everything above it, so
+    // it names every out-of-band file THIS bundle actually needs — a bundle
+    // carrying witness material and a bundle carrying none should not be
+    // told to run the same command — and then the build that produced the
+    // report, because "run this command" is incomplete without "with this".
+    let mut reproduce = format!(
+        "Reproduce this report: virp-verify {}",
+        docket_bundle::bundle_display_name(path)
     );
+    let mut wanted = vec!["--pin <examiner-key.json> to establish signer trust"];
+    if bundle.witness.is_some() && !witness_key_supplied {
+        wanted.push("--witness-key <witness.pub> to check the witness's signed tree head");
+    }
+    reproduce.push_str(&format!(" (add {})", wanted.join("; ")));
+    reproduce.push_str(&format!(", using {}", build_identity()));
+    let _ = writeln!(out, "{reproduce}");
     if show_path {
         let _ = writeln!(out, "bundle root: {}", bundle.root.display());
     }

@@ -1,0 +1,19 @@
+{
+  "v": "docket-witness-proof/1",
+  "session_id": "docket-witness:filler-a",
+  "leaf": {
+    "chain_id": "efdcf3b29dcdda85abdd4e57229a95b41a55fb68734b66cb33c60264919b9685",
+    "sequence": 2,
+    "head_hash": "7cb4000d39ff09491727be9f3b2673d09b1c317e869405e38967ed8813e5b95b",
+    "key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+    "signature": "f8063b0ca2abea26b16b41e4e511891691899ae684cd36239107262f83087564b77349af4df86467412c4ffe95d47377cbbc0efa4ca7eb5664d1d6ed70cdd501",
+    "timestamp": "2026-09-05T01:37:43.046Z"
+  },
+  "leaf_index": 0,
+  "tree_size": 3,
+  "audit_path": [
+    "8932f14cb6e02a44a260ec13bca7569c2c8115e7f2b70e62e41d7c662b21c7dc",
+    "6350c2624dde34b31666d34c4d96cca6dc145736c7c65ae8afaec5f76e4db66f"
+  ],
+  "proof_served": "{\"leaf_index\":0,\"tree_size\":3,\"root_hash\":\"b4e74d39fe667e004b44172732bb20b91754db17608bf0d75d7406beaa2d8acf\",\"inclusion_proof\":[\"8932f14cb6e02a44a260ec13bca7569c2c8115e7f2b70e62e41d7c662b21c7dc\",\"6350c2624dde34b31666d34c4d96cca6dc145736c7c65ae8afaec5f76e4db66f\"]}"
+}

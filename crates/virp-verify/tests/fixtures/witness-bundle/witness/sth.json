@@ -1,0 +1,7 @@
+{
+  "v": "docket-witness-sth/1",
+  "witness_url": "http://127.0.0.1:8798",
+  "witness_key_id": "dfdfdd6c55bf03bcb5c4d10e40ef3df3",
+  "fetched_at": "2026-09-05T01:37:43Z",
+  "sth_served": "{\"tree_size\":3,\"root_hash\":\"b4e74d39fe667e004b44172732bb20b91754db17608bf0d75d7406beaa2d8acf\",\"timestamp\":\"2026-09-05T01:37:43.057Z\",\"signature\":\"8b54f8e57920c81c7fd378063215873533c8a1c2043d16889aaefa3197dd41119e8c1024345e88a3b2de1afe01ebbaa86b17a8953f008a883334ef4b087bed04\"}"
+}

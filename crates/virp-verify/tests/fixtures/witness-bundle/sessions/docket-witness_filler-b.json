@@ -1,0 +1,79 @@
+{
+  "session_id": "docket-witness:filler-b",
+  "entries": [
+    {
+      "artifact_hash": "97eef165fef958f6bf4e4a9681337d87216791e5b58f96363c99b465805ed1d5",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:filler-b:0000",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000000000,
+      "previous_entry_hash": "d9f2aa953dd93f06b9bab470a511fdea8c98c1510197759b821731cf3fb8e454",
+      "sequence": 0,
+      "session_id": "docket-witness:filler-b",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787101000000000000,
+      "chain_entry_hash": "d1429229a34f10e2d7f8394a98dc4217b86ab614c5c8793ce8838c5ef8c299ed",
+      "chain_hmac": "d4a3f8c6f0e80f73cc9b2aebbf38502a786097e840f99541e8363259e093db2b",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "5f551bf5646af4cc519116ce498ebf2d275b0462b42175eb82cb509f08033b70277738ed78e56391c41e34a5a6c9a3505b1d40e5a9ab522d402ce91b4693100b"
+      }
+    },
+    {
+      "artifact_hash": "bb1424d579a25aaa10c15ddb157d7d999fc0fdc405e052cab8d2b360d9181072",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:filler-b:0001",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000001000,
+      "previous_entry_hash": "d1429229a34f10e2d7f8394a98dc4217b86ab614c5c8793ce8838c5ef8c299ed",
+      "sequence": 1,
+      "session_id": "docket-witness:filler-b",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787101001000000000,
+      "chain_entry_hash": "c72ec5e3bcb7b9df8c3c6fec074b00b2b4710b5a78b272d77c952e3c802e2146",
+      "chain_hmac": "c576270911324e55bea22ea8debf1e14d73ecb766961e3b7df6c2e5353ef3258",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "227fe6e74314959b6b8e067a734235e2b0eaa9ec35364952839a14fcb6d2abeab55e101a891ac28819f448755e57450fc240f1ad54d26f9e4410d622dfeba00a"
+      }
+    },
+    {
+      "artifact_hash": "8450e0219f18867d3d0882ff78b502bfb1c2278be031d889363d856c09a682e1",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:filler-b:0002",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000002000,
+      "previous_entry_hash": "c72ec5e3bcb7b9df8c3c6fec074b00b2b4710b5a78b272d77c952e3c802e2146",
+      "sequence": 2,
+      "session_id": "docket-witness:filler-b",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787101002000000000,
+      "chain_entry_hash": "2c8e17933194fe85c538e2fc7c9e668b93b3c6a7f4f28badc76066b7fd02be80",
+      "chain_hmac": "901507d8961861d800835462a828410a49d6f2b470b58f649ddf82384dd7ae9c",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "46eead9a7d390a3d2e5f7d2cb5032f3a8fbf226a3ae66eaf1491023434242f553ff101ae6353a7def69f478f416a2265db5e9a6da9f0ec9843bfd7cd79cb1003"
+      }
+    }
+  ],
+  "head": {
+    "session_id": "docket-witness:filler-b",
+    "last_sequence": 2,
+    "last_entry_hash": "2c8e17933194fe85c538e2fc7c9e668b93b3c6a7f4f28badc76066b7fd02be80",
+    "head_hmac": "200c2259286e5e3948f341a5f096b197bc2c0507b779b993adfca50c60b2e5ce",
+    "signature": {
+      "signature_scheme": "ed25519-detached-v1",
+      "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+      "signature_hex": "6c2108f40b937c5f04c58e139bd8a4f2ab358951ed5354e3a695ec9219368a4d79c2e7e6ea813e24d6d4bc3e8469beaf888f7dc88ae6e620211a9c35af70eb02"
+    }
+  }
+}

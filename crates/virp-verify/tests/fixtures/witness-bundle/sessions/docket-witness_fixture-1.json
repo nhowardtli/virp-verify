@@ -1,0 +1,142 @@
+{
+  "session_id": "docket-witness:fixture-1",
+  "entries": [
+    {
+      "artifact_hash": "fbd15dad4ffc0643c412545240e5144e3aec835b150be4e70199a04909f546e8",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0000",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000000000,
+      "previous_entry_hash": "3acd899b72ae33d4610c1c3033fa3244ca33a875fbff7447c1cb5b410689a190",
+      "sequence": 0,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000000000000000,
+      "chain_entry_hash": "f66fabf892ccc0e41fa4a2ef83e903de38d5be67b658163055d1de8817e6c908",
+      "chain_hmac": "116c1fe1b4a359d14a1844cf2449f7328c5a3404a81e09bd9d0b4f13e7abf25f",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "5bfd4b1876f325df9e50dc7e9d40b6392bd7b8c492cad778dded2a0d48ed0dc3d3cd9ee569e27bd2449b7de89f691e04856dad3ca6819e04392a5f5e5d260e0d"
+      }
+    },
+    {
+      "artifact_hash": "2c4fe52fcf75425964afeb6feb652c034c8dc352a93ebe6cb56a2d8aa7321caf",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0001",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000001000,
+      "previous_entry_hash": "f66fabf892ccc0e41fa4a2ef83e903de38d5be67b658163055d1de8817e6c908",
+      "sequence": 1,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000001000000000,
+      "chain_entry_hash": "ce50275ee6c0ea48f1fcc8930b742c1b36a634691256ab435bcada9b24943bcc",
+      "chain_hmac": "d946ccdffd9fcc9e84307255d1425d12a47a7d01541d16d424b4dc8487fba649",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "2133765b91f829c5a6d6764106767d25a53d1b1676db287729534135fd27ac6e23ada40555f35119e9f9770a45107021b0b69eee32d39c74342f3060c5069007"
+      }
+    },
+    {
+      "artifact_hash": "64ec8a9bb11b27a1ac41c5dda0aec604d042ca8945dae8b8c4e78d9a76911718",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0002",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000002000,
+      "previous_entry_hash": "ce50275ee6c0ea48f1fcc8930b742c1b36a634691256ab435bcada9b24943bcc",
+      "sequence": 2,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000002000000000,
+      "chain_entry_hash": "6eb760c01a2683c1b4aaa3560a1100454e1d7f63223e9787333b0205c62f3a8f",
+      "chain_hmac": "6e0436ab1b455011903c7262deda7bc8f866d92d34db4d9bdf2e666663034e28",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "31d2bb5798e0d1c36321f4f2c866374da23dec6408338d959b88f132ef0702e1bf1fdcdd1a25e8b0007c2ba4dce3a7c144d4873490b38b6f317c667f78b0c106"
+      }
+    },
+    {
+      "artifact_hash": "5550754a0d37bf48c975236c6e5803fac07a1e07e74f5f940fd3533831407091",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0003",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000003000,
+      "previous_entry_hash": "6eb760c01a2683c1b4aaa3560a1100454e1d7f63223e9787333b0205c62f3a8f",
+      "sequence": 3,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000003000000000,
+      "chain_entry_hash": "0ad8a67cb55332520ff597fd47e54e48cd495f66fcbc9bff3e8b819d890a9987",
+      "chain_hmac": "2441eab527997cfa89ed14e6e25671c627b54ea835727952b9d38104c9bc6a38",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "ec7063f42960fbe5f54a15ee15bd725830e04176bfec659fd5e0368a1e22ee34cb2908542ebec15d3e68971a8af9bcc0e0a5f5c00a19f691ae9bc15ec695e40a"
+      }
+    },
+    {
+      "artifact_hash": "53f98b64302e68bb07a74501be89310428985d99fd442758c36f2eb79191a4d0",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0004",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000004000,
+      "previous_entry_hash": "0ad8a67cb55332520ff597fd47e54e48cd495f66fcbc9bff3e8b819d890a9987",
+      "sequence": 4,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000004000000000,
+      "chain_entry_hash": "91766fbaa2ff8884bf1ae8917175ea4709eb97239cdfd6d87c24d3613c7bd064",
+      "chain_hmac": "15f9b6d88486c625aaca8125dc141820034bf83d4d40a5f06a52b21d8cd77e7b",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "40151a5fa469343e373baa8dcfab37794069bdef42b2541e356052eced13c12f82b66cc56fd073a1f41acc4b13aef58066c1dcbe40686673b987168439ea850f"
+      }
+    },
+    {
+      "artifact_hash": "1007e48baf1a03bbcb44c0c57660007d424b6d6b83bdf7e796837a08568152ec",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "obs:fixture-1:0005",
+      "artifact_schema_version": "1",
+      "artifact_type": "observation",
+      "monotonic_ns": 1000005000,
+      "previous_entry_hash": "91766fbaa2ff8884bf1ae8917175ea4709eb97239cdfd6d87c24d3613c7bd064",
+      "sequence": 5,
+      "session_id": "docket-witness:fixture-1",
+      "signer_node_id": 1,
+      "signer_org_id": "local",
+      "timestamp_ns": 1787000005000000000,
+      "chain_entry_hash": "0792f9b731673fc5d9b02198c94146f8e469e10bbdaad7b52d50263f50bb383f",
+      "chain_hmac": "0ac4d28245eb1501f681bd7b13fd0bc2ba0ceef73eff82878eeed8c1e5dfdb64",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+        "signature_hex": "85fb029db58b9bb4f7e0fa1818a02f7c90ebebab3c0f1817299a9cad6b83bcab1c68022b17116e5b32823347f043e93bb53bc5157a75a0abfaf10773e9d8d20a"
+      }
+    }
+  ],
+  "head": {
+    "session_id": "docket-witness:fixture-1",
+    "last_sequence": 5,
+    "last_entry_hash": "0792f9b731673fc5d9b02198c94146f8e469e10bbdaad7b52d50263f50bb383f",
+    "head_hmac": "8ad63f486691500677e37928d32cb22d8ada6d7b1b905ba6304646d7de55d15f",
+    "signature": {
+      "signature_scheme": "ed25519-detached-v1",
+      "signing_key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+      "signature_hex": "6fbc90b1722782d157259a4b20c6da442b7a250601d4a42608640d5f0925e51107601e0671d31ea87a905ea648f5d5c1051790c6bb005f064e6bf6dec1705907"
+    }
+  }
+}

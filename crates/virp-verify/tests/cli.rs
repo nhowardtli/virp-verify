@@ -138,7 +138,7 @@ fn json_output_is_machine_readable() {
     let (code, out, _) = run(&["--json", fixture().to_str().unwrap()]);
     assert_eq!(code, 5);
     let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert_eq!(v["docket_report_version"], "docket-report/0.6");
+    assert_eq!(v["docket_report_version"], "docket-report/0.8");
     assert_eq!(v["verdict"], "cryptographically_consistent");
     // 0.3: boundary results are computed on every report. This fixture has
     // no artifact bodies, so completeness is UNVERIFIABLE with the reason,

@@ -19,11 +19,12 @@ pub mod producer;
 pub mod seal;
 pub mod sig;
 pub mod verify;
+pub mod witness;
 
 pub use bundle::{
     bundle_display_name, read_key_file, validate_session_input, BoundaryReport, Bundle, BundleError, BundleReport,
     CaptureSummary, ManifestReferencedArtifact, RedactedEntry, Redaction, RedactionAudit, ReferencedCitation,
-    ReferencedSummary, SourceDeviceAnswer, SourceDeviceReport, REPORT_VERSION,
+    ReferencedSummary, SourceDeviceAnswer, SourceDeviceReport, WitnessCheck, REPORT_VERSION,
 };
 pub use camera::{
     cited_digests, claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage,
@@ -43,6 +44,13 @@ pub use verify::{
     ReferencedCoverage, ReferencedDefect, ReferencedEntry, ReferencedStore, SessionChain, SessionReport, SignerReport,
     SignerTrust, Status, TrustSource, Verdict,
 };
+pub use witness::{
+    grade_witness, grade_witness_consistency, leaf_hash, node_hash, verify_consistency, verify_inclusion,
+    LiveConsistency, ManifestWitness, ManifestWitnessSession, ProofError, Sth, WitnessLeaf, WitnessMaterial,
+    WitnessOutcome, WitnessProofFile, WitnessSthFile, WitnessSummary, PROOF_FILE_VERSION, STH_FILE_VERSION, TAG_LEAF,
+    TAG_STH,
+};
+pub use witness::{parse_consistency, parse_sth, ConsistencyBody};
 
 /// Pretty JSON for a bundle report (kept here so the CLI needs no serde dep).
 pub fn report_to_json_pretty(report: &BundleReport) -> Result<String, serde_json::Error> {

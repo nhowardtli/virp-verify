@@ -11,11 +11,27 @@
 //! boundary result is FAILED, the top line carries that fact; the verdict
 //! value, the JSON and the exit code stay untouched.
 //!
-//! The bundle is built here, deliberately (no producer emits it): a keyless
-//! session whose hashes, genesis and links all hold, carrying one
-//! camera_segment/2 body whose first-record gap cites a non-adjacent
-//! predecessor — the capture axis grades FAILED while every cryptographic
-//! property holds at its tier.
+//! The rule is not capture-specific: it names every result that sits
+//! BESIDE the verdict rather than inside it. `producer_signature` FAILED
+//! and `producer_trust` MISMATCH are the capture host's key, a different
+//! trust boundary from the O-Node chain key — they must never be folded
+//! into the chain verdict, and for exactly that reason they must be named
+//! in the top line.
+//!
+//! The bundles are built here, deliberately (no producer emits them): a
+//! keyless session whose hashes, genesis and links all hold, carrying a
+//! camera_segment/2 body — for the capture case, one whose first-record gap
+//! cites a non-adjacent predecessor; for the producer case, a REAL
+//! producer-signed comp-clean body with one hex digit flipped inside
+//! `producer_sig`, re-hashed into the chain so the artifact binding is
+//! intact and the producer signature is the only thing wrong.
+//!
+//! The keyless chain caps the verdict at CONSISTENT-UNAUTHENTICATED here:
+//! altering a producer_sig inside a SIGNED session would break the chain
+//! entry hash it commits to, and Docket holds no chain private key to
+//! re-sign with. The CRYPTOGRAPHICALLY-VERIFIED rendering of the same rule
+//! is asserted as a unit test over `BundleReport::verdict_line` in
+//! `docket-bundle/src/bundle.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -169,4 +185,112 @@ fn a_non_failed_boundary_leaves_the_top_line_bare() {
         out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-CONSISTENT (signer trust not established)\n"),
         "{out}"
     );
+}
+
+/// A real producer-signed body with one hex digit flipped inside
+/// `producer_sig`, and the chain re-hashed around it: every keyless
+/// property holds, the artifact binding is VERIFIED (the body is intact
+/// against what the chain commits to), and the ONLY thing wrong is the
+/// capture host's signature over the record.
+fn altered_producer_sig_body() -> Vec<u8> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/comp-clean-20260829/artifacts");
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("comp-clean artifacts")
+        .map(|e| e.expect("dir entry").path())
+        .collect();
+    names.sort();
+    let text = std::fs::read_to_string(&names[0]).expect("read producer body");
+    let at = text.find("\"producer_sig\":\"").expect("producer_sig present") + "\"producer_sig\":\"".len();
+    let old = text.as_bytes()[at] as char;
+    let new = if old == '0' { '1' } else { '0' };
+    let mut altered = text.clone();
+    altered.replace_range(at..at + 1, &new.to_string());
+    assert_ne!(altered, text, "the flip must change the bytes");
+    altered.into_bytes()
+}
+
+fn producer_key_arg() -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/producer-keys/comp-clean.pub")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned()
+}
+
+#[test]
+fn a_failed_producer_signature_rides_in_the_top_line() {
+    let root = bundle_with_body("failed-producer", &altered_producer_sig_body());
+    let key = producer_key_arg();
+    let (code, out) = run(&root, &["--producer-key", &key]);
+
+    // Untouched: the producer key is not the chain key, so a failure there
+    // moves neither the verdict nor the exit code.
+    assert_eq!(code, 4, "{out}");
+    assert!(out.contains("producer_signature     FAILED"), "{out}");
+    // The bodies really are intact — this is not the artifact-binding
+    // failure wearing a producer costume.
+    assert!(out.contains("artifact_binding"), "{out}");
+    assert!(!out.contains("artifact_binding       FAILED"), "{out}");
+
+    // The top line names both producer results.
+    let first = out
+        .lines()
+        .find(|l| l.starts_with("OVERALL VERDICT:"))
+        .expect("verdict line");
+    assert!(
+        first.contains("boundary result producer_signature FAILED (session camera:framing:2026-08-30)"),
+        "{first}"
+    );
+    assert!(
+        first.contains("boundary result producer_trust MISMATCH (session camera:framing:2026-08-30)"),
+        "{first}"
+    );
+    assert!(!out.contains("OVERALL VERDICT: CONSISTENT-UNAUTHENTICATED\n"), "{out}");
+}
+
+#[test]
+fn the_json_headline_carries_the_same_annotation_as_the_page() {
+    let root = bundle_with_body("failed-producer-json", &altered_producer_sig_body());
+    let key = producer_key_arg();
+    let (code, out) = run(&root, &["--json", "--producer-key", &key]);
+    assert_eq!(code, 4, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+
+    // `verdict` stays the machine token…
+    assert_eq!(v["verdict"], "consistent_unauthenticated");
+    assert_eq!(v["sessions"][0]["producer"]["signature_validity"]["status"], "failed");
+    assert_eq!(v["sessions"][0]["producer"]["trust"], "mismatch");
+
+    // …and `headline` is the SAME string the rendered page puts on top, so
+    // a consumer that quotes a headline cannot quote a cleaner one than a
+    // reader sees.
+    let headline = v["headline"].as_str().expect("headline field");
+    assert!(
+        headline.contains("boundary result producer_signature FAILED (session camera:framing:2026-08-30)"),
+        "{headline}"
+    );
+    assert!(
+        headline.contains("boundary result producer_trust MISMATCH (session camera:framing:2026-08-30)"),
+        "{headline}"
+    );
+    let (_, text) = run(&root, &["--producer-key", &key]);
+    let first = text
+        .lines()
+        .find(|l| l.starts_with("OVERALL VERDICT:"))
+        .expect("verdict line");
+    assert_eq!(first, format!("OVERALL VERDICT: {headline}"));
+}
+
+/// The clean fixture proves the annotation is evidence-driven, not
+/// unconditional: the same bundle with the RIGHT producer key and an
+/// unaltered body carries no producer clause at all.
+#[test]
+fn an_intact_producer_signature_leaves_the_top_line_bare() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/comp-clean-20260829");
+    let pin = dir.join("keys.json").to_str().unwrap().to_owned();
+    let key = producer_key_arg();
+    let (code, out) = run(&dir, &["--pin", &pin, "--producer-key", &key]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("OVERALL VERDICT: CRYPTOGRAPHICALLY-VERIFIED\n"), "{out}");
+    assert!(!out.contains("boundary result producer"), "{out}");
 }

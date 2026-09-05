@@ -255,6 +255,13 @@ mod hmac {
     /// carry a `chain_hmac`. Everything else about the chain is correct, so
     /// the only thing under test is coverage.
     fn chain(n: usize, hmac_on: impl Fn(usize) -> bool) -> SessionChain {
+        chain_with_head_hmac(n, false, hmac_on)
+    }
+
+    /// The same session, with control over whether the HEAD carries a
+    /// `head_hmac` — the operator's claim that the symmetric tier was run
+    /// over this session at all.
+    fn chain_with_head_hmac(n: usize, head_hmac: bool, hmac_on: impl Fn(usize) -> bool) -> SessionChain {
         let session_id = "s".to_owned();
         let mut prev = genesis_hash_hex(&session_id);
         let mut entries = Vec::new();
@@ -291,7 +298,7 @@ mod hmac {
                     last_entry_hash: prev,
                 },
                 canonical_utf8: None,
-                head_hmac: None,
+                head_hmac: head_hmac.then(|| super::hex64('c')),
                 signature: None,
             }),
             session_id,
@@ -364,6 +371,83 @@ mod hmac {
         assert!(status.is_failed(), "{status:?}");
         if let Status::Failed { detail } = status {
             assert!(detail.contains("64-hex"), "{detail}");
+        }
+    }
+
+    fn entry_hmacs_under_head(n: usize, head_hmac: bool, hmac_on: impl Fn(usize) -> bool) -> (Status, Verdict) {
+        let report = verify_session(&chain_with_head_hmac(n, head_hmac, hmac_on), &Keyring::new());
+        let p = report.property("entry_hmacs").expect("entry_hmacs graded");
+        (p.status.clone(), report.verdict)
+    }
+
+    /// The other end of the all-or-nothing rule: 0 of n. A head carrying a
+    /// `head_hmac` says the operator ran the symmetric tier over this
+    /// session; entries carrying none is that claim contradicted, and it is
+    /// reached by removing every HMAC — which `chain_hmac` sitting outside
+    /// the canonical bytes would otherwise leave traceless. `head_hmac` is
+    /// the only trace, so the verifier must read it.
+    #[test]
+    fn total_stripping_under_a_head_hmac_fails() {
+        for n in [1usize, 2, 10, 1000] {
+            let (status, verdict) = entry_hmacs_under_head(n, true, |_| false);
+            assert!(status.is_failed(), "n={n} graded {status:?}, not FAILED");
+            assert_eq!(verdict, Verdict::Failed, "n={n}");
+            let Status::Failed { detail } = &status else {
+                unreachable!()
+            };
+            assert!(
+                detail.starts_with("head claims symmetric authentication over entries that carry none"),
+                "n={n}: {detail}"
+            );
+            assert!(detail.contains(&format!("all {n} entries")), "n={n}: {detail}");
+        }
+    }
+
+    /// The legitimate shape is untouched by that fix: no head_hmac and no
+    /// entry HMACs is a pre-symmetric-tier session, which claims nothing and
+    /// stays ABSENT. Nothing but the head's own claim separates the two.
+    #[test]
+    fn total_stripping_without_a_head_hmac_is_still_absent() {
+        for n in [1usize, 2, 10, 1000] {
+            assert_eq!(entry_hmacs_under_head(n, false, |_| false).0, Status::Absent, "n={n}");
+        }
+        assert_eq!(
+            entry_hmacs_under_head(10, false, |_| false).1,
+            Verdict::ConsistentUnauthenticated
+        );
+    }
+
+    /// Full coverage under a head_hmac is the honest shape the producer
+    /// emits, and is OPERATOR-ATTESTED as before — the new rule fires on
+    /// the contradiction, not on the head_hmac's presence.
+    #[test]
+    fn full_coverage_under_a_head_hmac_is_still_operator_attested() {
+        for n in [1usize, 2, 10] {
+            let (status, verdict) = entry_hmacs_under_head(n, true, |_| true);
+            assert_eq!(status, Status::OperatorAttested, "n={n}");
+            assert_eq!(verdict, Verdict::OperatorAttestedUnverifiable, "n={n}");
+        }
+    }
+
+    /// Partial stripping fails exactly as it did before, under a head_hmac
+    /// and without one, and keeps its own coverage-count reason rather than
+    /// the total-stripping one.
+    #[test]
+    fn partial_stripping_still_fails_from_either_head_shape() {
+        for head_hmac in [false, true] {
+            for (n, missing) in [(2usize, 0usize), (2, 1), (10, 4), (1000, 999)] {
+                let (status, verdict) = entry_hmacs_under_head(n, head_hmac, |i| i != missing);
+                assert!(status.is_failed(), "head_hmac={head_hmac} n={n}: {status:?}");
+                assert_eq!(verdict, Verdict::Failed, "head_hmac={head_hmac} n={n}");
+                let Status::Failed { detail } = &status else {
+                    unreachable!()
+                };
+                assert!(detail.contains(&format!("{} of {n} entries", n - 1)), "{detail}");
+                assert!(
+                    !detail.starts_with("head claims symmetric authentication"),
+                    "partial coverage took the total-stripping reason: {detail}"
+                );
+            }
         }
     }
 }

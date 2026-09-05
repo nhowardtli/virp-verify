@@ -1,0 +1,94 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=fixture.db)",
+  "created_at": "2026-09-05T01:37:43Z",
+  "sessions": [
+    {
+      "session_id": "docket-witness:filler-a",
+      "path": "sessions/docket-witness_filler-a.json"
+    },
+    {
+      "session_id": "docket-witness:filler-b",
+      "path": "sessions/docket-witness_filler-b.json"
+    },
+    {
+      "session_id": "docket-witness:fixture-1",
+      "path": "sessions/docket-witness_fixture-1.json"
+    }
+  ],
+  "keys": "keys.json",
+  "artifacts": [
+    {
+      "artifact_hash": "1007e48baf1a03bbcb44c0c57660007d424b6d6b83bdf7e796837a08568152ec",
+      "path": "artifacts/1007e48baf1a03bbcb44c0c57660007d424b6d6b83bdf7e796837a08568152ec"
+    },
+    {
+      "artifact_hash": "2c4fe52fcf75425964afeb6feb652c034c8dc352a93ebe6cb56a2d8aa7321caf",
+      "path": "artifacts/2c4fe52fcf75425964afeb6feb652c034c8dc352a93ebe6cb56a2d8aa7321caf"
+    },
+    {
+      "artifact_hash": "53f98b64302e68bb07a74501be89310428985d99fd442758c36f2eb79191a4d0",
+      "path": "artifacts/53f98b64302e68bb07a74501be89310428985d99fd442758c36f2eb79191a4d0"
+    },
+    {
+      "artifact_hash": "5550754a0d37bf48c975236c6e5803fac07a1e07e74f5f940fd3533831407091",
+      "path": "artifacts/5550754a0d37bf48c975236c6e5803fac07a1e07e74f5f940fd3533831407091"
+    },
+    {
+      "artifact_hash": "64ec8a9bb11b27a1ac41c5dda0aec604d042ca8945dae8b8c4e78d9a76911718",
+      "path": "artifacts/64ec8a9bb11b27a1ac41c5dda0aec604d042ca8945dae8b8c4e78d9a76911718"
+    },
+    {
+      "artifact_hash": "8450e0219f18867d3d0882ff78b502bfb1c2278be031d889363d856c09a682e1",
+      "path": "artifacts/8450e0219f18867d3d0882ff78b502bfb1c2278be031d889363d856c09a682e1"
+    },
+    {
+      "artifact_hash": "97eef165fef958f6bf4e4a9681337d87216791e5b58f96363c99b465805ed1d5",
+      "path": "artifacts/97eef165fef958f6bf4e4a9681337d87216791e5b58f96363c99b465805ed1d5"
+    },
+    {
+      "artifact_hash": "b9a3c41d92fbc09528996d2f77715705f46fc5c4d839c2a4f7f443833c4da43f",
+      "path": "artifacts/b9a3c41d92fbc09528996d2f77715705f46fc5c4d839c2a4f7f443833c4da43f"
+    },
+    {
+      "artifact_hash": "bb1424d579a25aaa10c15ddb157d7d999fc0fdc405e052cab8d2b360d9181072",
+      "path": "artifacts/bb1424d579a25aaa10c15ddb157d7d999fc0fdc405e052cab8d2b360d9181072"
+    },
+    {
+      "artifact_hash": "c7ca0154cd3f3b51cd437ed058a33ed8b1e0749b07a4b3bf59c7d881bfbe0681",
+      "path": "artifacts/c7ca0154cd3f3b51cd437ed058a33ed8b1e0749b07a4b3bf59c7d881bfbe0681"
+    },
+    {
+      "artifact_hash": "e3c2c81c5265d4ee2bb2ca19d3410339acee4aab108bbe05628d227b8741049e",
+      "path": "artifacts/e3c2c81c5265d4ee2bb2ca19d3410339acee4aab108bbe05628d227b8741049e"
+    },
+    {
+      "artifact_hash": "fbd15dad4ffc0643c412545240e5144e3aec835b150be4e70199a04909f546e8",
+      "path": "artifacts/fbd15dad4ffc0643c412545240e5144e3aec835b150be4e70199a04909f546e8"
+    }
+  ],
+  "witness": {
+    "witness_url": "http://127.0.0.1:8798",
+    "witness_key_id": "dfdfdd6c55bf03bcb5c4d10e40ef3df3",
+    "sth": "witness/sth.json",
+    "tree_size": 3,
+    "sessions": [
+      {
+        "session_id": "docket-witness:filler-a",
+        "present": true,
+        "path": "witness/docket-witness_filler-a.proof.json"
+      },
+      {
+        "session_id": "docket-witness:filler-b",
+        "present": true,
+        "path": "witness/docket-witness_filler-b.proof.json"
+      },
+      {
+        "session_id": "docket-witness:fixture-1",
+        "present": true,
+        "path": "witness/docket-witness_fixture-1.proof.json"
+      }
+    ]
+  }
+}

@@ -177,6 +177,19 @@ impl Keyring {
             .map(|(id, _)| id.as_str())
     }
 
+    /// The keys the examiner supplied out of band, not just their ids.
+    ///
+    /// Only these can say anything about WHO produced a signature. A key that
+    /// travelled inside the bundle proves internal consistency and nothing
+    /// else, which is why this filter exists rather than a plain iterator
+    /// over everything the keyring holds.
+    pub fn pinned_keys(&self) -> impl Iterator<Item = &PublicKey> {
+        self.keys
+            .iter()
+            .filter(|(_, (_, s))| *s == TrustSource::ExaminerTrustStore)
+            .map(|(_, (k, _))| k)
+    }
+
     /// Ids of keys carried inside the bundle.
     pub fn bundle_key_ids(&self) -> impl Iterator<Item = &str> {
         self.keys
@@ -960,12 +973,20 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
     // in the chain schema, and the exporter copies the column verbatim — so a
     // partial session is not a shape an honest producer makes.
     //
-    // OPEN, deliberately not changed here: 0-of-n entries while the head DOES
-    // carry a head_hmac. The same all-or-nothing logic says total stripping
-    // under a present head HMAC should also fail, but that would re-grade a
-    // case currently reported ABSENT and no real bundle in that shape exists
-    // to test against. See SESSION-SUMMARY.md.
+    // Total stripping — 0-of-n entries — is ABSENT only when the head makes
+    // no symmetric claim either. A head that carries a `head_hmac` says the
+    // operator ran the symmetric tier over this session; entries carrying
+    // none is then the same all-or-nothing violation partial coverage is,
+    // reached from the other end, and the head's own claim is what makes it
+    // visible. An honest producer cannot emit that shape: `chain_hmac` is
+    // NOT NULL in the chain schema, so a head_hmac without entry HMACs means
+    // every entry's HMAC was removed after export.
+    //
+    // A session with NO head_hmac and no entry HMACs is untouched and stays
+    // ABSENT: pre-symmetric-tier chains are a real and legitimate shape, and
+    // nothing in them claims otherwise.
     {
+        let head_claims_hmac = chain.head.as_ref().is_some_and(|h| h.head_hmac.is_some());
         let with = chain.entries.iter().filter(|e| e.chain_hmac.is_some()).count();
         let malformed = chain
             .entries
@@ -974,6 +995,13 @@ pub fn verify_session(chain: &SessionChain, keyring: &Keyring) -> SessionReport 
             .count();
         let status = if malformed > 0 {
             Status::failed(format!("{malformed} chain_hmac values are not 64-hex digests"))
+        } else if with == 0 && head_claims_hmac && n > 0 {
+            Status::failed(format!(
+                "head claims symmetric authentication over entries that carry none. The head carries a \
+                 head_hmac while all {n} entries carry no chain_hmac; the symmetric tier is \
+                 all-or-nothing, and chain_hmac sits outside the canonical bytes, so nothing else \
+                 would detect its removal"
+            ))
         } else if with == 0 {
             Status::Absent
         } else if with < n {

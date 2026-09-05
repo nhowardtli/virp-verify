@@ -39,7 +39,11 @@ use crate::sig::PublicKey;
 use crate::verify::{
     grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
     CarriedReferenced, Keyring, NotCarried, ReferencedCoverage, ReferencedEntry, ReferencedStore, SessionChain,
-    SessionReport, Status, Verdict,
+    SessionReport, SignerTrust, Status, Verdict,
+};
+use crate::witness::{
+    grade_witness, grade_witness_consistency, witness_summary, LiveConsistency, ManifestWitness, WitnessMaterial,
+    WitnessOutcome, WitnessProofFile, WitnessSthFile, WitnessSummary,
 };
 
 pub const BUNDLE_VERSION: &str = "docket-bundle/0.1";
@@ -71,7 +75,25 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// information as one string, no existing field changed shape, and no
 /// grade, verdict or exit code changed; only the wording of `detail` and
 /// the two surfaces that render it.
-pub const REPORT_VERSION: &str = "docket-report/0.6";
+/// `0.7` added the per-session `witness` and `witness_consistency` results
+/// and `boundary.witness`: whether this session's head was placed in a
+/// third-party transparency log, and whether the tree that proof is against
+/// is still a prefix of that log. Additive only — every field is optional and
+/// omitted from a bundle carrying no witness material, so every earlier
+/// report serializes unchanged. One verdict rule changed, and only in the
+/// direction a cryptographic inconsistency already moved it: a `witness`
+/// result of FAILED — an inclusion proof that does not recompute — makes the
+/// overall verdict FAILED, exactly as a failed artifact binding does. ABSENT
+/// and UNVERIFIABLE never move the verdict, in either direction.
+/// `0.8` added the top-level `headline` string: the rendered top line, which
+/// now names EVERY beside-the-verdict result that is FAILED (or, for
+/// producer trust, MISMATCH) and not only `capture_completeness`. Additive
+/// only — `verdict` is still the untouched machine token and no grade,
+/// verdict or exit code changed — but one grade did change beneath it: total
+/// entry-HMAC stripping under a head that carries a `head_hmac` is now
+/// `entry_hmacs` FAILED where 0.7 graded it ABSENT (see the symmetric-tier
+/// note in `verify.rs`), which makes such a session FAILED.
+pub const REPORT_VERSION: &str = "docket-report/0.8";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -193,6 +215,13 @@ pub struct Manifest {
     /// verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction: Option<Redaction>,
+    /// What a witness said about these sessions' heads (exporter
+    /// `--witness`). Absent in every bundle exported before that flag
+    /// existed, and absent means no `witness` property is graded at all —
+    /// a bundle that was never offered to a witness must read exactly as it
+    /// did before witnessing existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness: Option<ManifestWitness>,
 }
 
 /// The manifest's `redaction` block. See [`Manifest::redaction`].
@@ -287,6 +316,9 @@ pub enum BundleError {
     MalformedReferencedDigest(String),
     /// Two manifest referenced rows claim the same digest.
     DuplicateReferencedArtifact(String),
+    /// Two manifest witness rows name the same session. Which one applies
+    /// would be the reader's guess, and a guess is not evidence.
+    DuplicateWitnessSession(String),
     /// A carried body is referenced by no entry in the bundle: content
     /// nothing in the evidence commits to. Strict reading rejects it.
     UnreferencedArtifact(String),
@@ -385,6 +417,9 @@ impl std::fmt::Display for BundleError {
             Self::DuplicateReferencedArtifact(h) => {
                 write!(f, "manifest lists more than one referenced artifact for sha256 {h}")
             }
+            Self::DuplicateWitnessSession(id) => {
+                write!(f, "manifest witness section lists session {id:?} more than once")
+            }
             Self::UnreferencedArtifact(h) => {
                 write!(
                     f,
@@ -465,6 +500,10 @@ pub struct Bundle {
     /// with no `referenced_artifacts` key — every bundle exported before the
     /// exporter could carry them.
     pub referenced: Option<ReferencedStore>,
+    /// The witness material this bundle carries: the signed tree head, and
+    /// one inclusion proof per session the witness had a leaf for. `None`
+    /// for a bundle with no `witness` section in its manifest.
+    pub witness: Option<WitnessMaterial>,
     /// SHA-256 of `manifest.json`'s exact bytes. Identifies this bundle in a
     /// report without naming the producer's filesystem: the manifest commits
     /// to every session path, every artifact hash and the key file, so two
@@ -1162,6 +1201,53 @@ impl Bundle {
             }
         };
 
+        // Witness material: the signed tree head the proofs are against, and
+        // one proof file per session the witness had a leaf for.
+        //
+        // NOTHING IS GRADED HERE. A carried head that will not parse is kept
+        // as the parse error and reported at grading time as a defect in the
+        // bundle, because "the file is broken" and "the witness never saw
+        // this head" are different statements and only the reader can be
+        // told which is which. Refusing to read the bundle at all would make
+        // a malformed witness file — the one part of a bundle a third party
+        // supplied — able to suppress every other result in it.
+        let witness = match &manifest.witness {
+            None => None,
+            Some(mw) => {
+                let sth_path = safe_join(root, &mw.sth)?;
+                let sth_file: WitnessSthFile = read_json(&sth_path, limits.witness_file_bytes, "witness tree head")?;
+                let sth = sth_file.parse();
+                let mut proofs = Vec::with_capacity(mw.sessions.len());
+                let mut seen = BTreeSet::new();
+                for row in &mw.sessions {
+                    if !seen.insert(row.session_id.clone()) {
+                        return Err(BundleError::DuplicateWitnessSession(row.session_id.clone()));
+                    }
+                    let file = match (&row.path, row.present) {
+                        (Some(rel), true) => {
+                            let path = safe_join(root, rel)?;
+                            Some(read_json::<WitnessProofFile>(
+                                &path,
+                                limits.witness_file_bytes,
+                                "witness inclusion proof",
+                            )?)
+                        }
+                        // present=false, or present with nowhere to look: the
+                        // bundle puts no proof in front of anyone, and the
+                        // manifest's reason is what gets reported.
+                        _ => None,
+                    };
+                    proofs.push((row.session_id.clone(), file));
+                }
+                Some(WitnessMaterial {
+                    manifest: mw.clone(),
+                    sth,
+                    sth_file,
+                    proofs,
+                })
+            }
+        };
+
         Ok(Bundle {
             root: root.to_owned(),
             manifest,
@@ -1172,6 +1258,7 @@ impl Bundle {
             seal_signature,
             artifacts,
             referenced,
+            witness,
             manifest_sha256,
         })
     }
@@ -1200,6 +1287,28 @@ impl Bundle {
     /// Empty means none were supplied: every session's producer signature is
     /// UNVERIFIABLE and producer trust UNESTABLISHED, stated per session.
     pub fn verify_with(&self, check: Option<&SealKeyCheck<'_>>, producer_keys: &[PublicKey]) -> BundleReport {
+        self.verify_with_witness(check, producer_keys, &WitnessCheck::default())
+    }
+
+    /// Like [`Bundle::verify_with`], with the examiner's out-of-band WITNESS
+    /// key(s) and, when the examiner asked for one, the result of a live
+    /// consistency fetch.
+    ///
+    /// A witness never upgrades a chain verdict. It answers a separate
+    /// question beside it — was this head in a log the operator does not
+    /// control, and when did that log say so — and the only way it moves the
+    /// verdict at all is downward, when a carried proof does not recompute.
+    pub fn verify_with_witness(
+        &self,
+        check: Option<&SealKeyCheck<'_>>,
+        producer_keys: &[PublicKey],
+        witness: &WitnessCheck<'_>,
+    ) -> BundleReport {
+        // The examiner's own chain keys, used ONLY to report whether the
+        // submitter's signature over a witness leaf holds. A key that came
+        // from inside the bundle can never say anything about who asked the
+        // witness to log this head.
+        let pinned_chain_keys: Vec<PublicKey> = self.keyring.pinned_keys().cloned().collect();
         let mut sessions = Vec::with_capacity(self.sessions.len());
         for chain in &self.sessions {
             let report = verify_session(chain, &self.keyring);
@@ -1240,6 +1349,35 @@ impl Bundle {
                     (Some(status), Some(coverage))
                 }
             };
+            // The witness, and the tree it was checked against. Both stay
+            // out of `properties`: they are statements about a third party's
+            // log, not about the chain's own bytes.
+            let (witness_outcome, witness_consistency) = match (&self.witness, &self.manifest.witness) {
+                // No section at all: say nothing rather than grade nothing.
+                (_, None) | (None, _) => (None, None),
+                (Some(material), Some(_)) => {
+                    let outcome = grade_witness(chain, material, witness.keys, &pinned_chain_keys);
+                    // The live check is per BUNDLE — one tree head, one
+                    // consistency proof — but it is reported per session
+                    // beside the property it qualifies, because a reader
+                    // looking at one session's witness row must not have to
+                    // scroll for the answer to "and is that tree still real".
+                    let consistency = match (&material.sth, witness.live) {
+                        (_, None) => None,
+                        (Err(_), Some(_)) => Some(Status::unverifiable(
+                            "the carried tree head is unreadable, so there is nothing to check a live head \
+                             against"
+                                .to_owned(),
+                        )),
+                        (Ok(carried), Some(live)) => Some(grade_witness_consistency(
+                            carried,
+                            live.as_ref().map_err(String::clone),
+                            witness.keys,
+                        )),
+                    };
+                    (Some(outcome), consistency)
+                }
+            };
             let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
             let sensor = summarise_sensor(chain, self.artifacts.as_ref());
             let producer = grade_producer_signatures(chain, self.artifacts.as_ref(), producer_keys);
@@ -1250,6 +1388,8 @@ impl Bundle {
                 artifact_coverage,
                 referenced_artifact_binding,
                 referenced_coverage,
+                witness: witness_outcome,
+                witness_consistency,
                 producer,
                 capture_completeness,
                 sensor,
@@ -1272,7 +1412,7 @@ impl Bundle {
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
         let boundary = boundary_report(self, &sessions);
-        BundleReport {
+        let mut report = BundleReport {
             docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: self.manifest.docket_bundle_version.clone(),
             chain_format: self.manifest.chain_format.clone(),
@@ -1280,11 +1420,18 @@ impl Bundle {
             pinned_key_ids: self.keyring.pinned_key_ids().map(str::to_owned).collect(),
             bundle_key_ids: self.keyring.bundle_key_ids().map(str::to_owned).collect(),
             producer_key_ids: producer_keys.iter().map(|k| k.key_id().to_owned()).collect(),
+            witness_key_ids: witness.keys.iter().map(|k| k.key_id().to_owned()).collect(),
             sessions,
             seal,
             boundary,
             verdict,
-        }
+            headline: String::new(),
+        };
+        // Computed from the finished report, from the one function every
+        // surface renders — the field is a copy of the rendered line, never
+        // a second place the rule is written down.
+        report.headline = report.verdict_line();
+        report
     }
 
     /// Grade the seal's minisign signature. Only called with a seal present.
@@ -1355,6 +1502,25 @@ pub struct SealKeyCheck<'a> {
     pub signature: Option<&'a MinisignSignature>,
 }
 
+/// The out-of-band material for grading a witness, and the result of the
+/// optional live check.
+///
+/// The KEYS are required for anything to reach VERIFIED and never come from
+/// the bundle — the same rule the seal key follows. `live` is the CLI's
+/// business: this crate opens no socket, so a live consistency check arrives
+/// here as data that was already fetched, or as the reason it was not.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WitnessCheck<'a> {
+    /// Examiner-pinned witness public keys (`--witness-key`). Empty means the
+    /// tree head is UNVERIFIABLE and witness trust UNESTABLISHED.
+    pub keys: &'a [PublicKey],
+    /// `Some(Ok(_))` when `--witness-url` was given and answered,
+    /// `Some(Err(reason))` when it was given and did not. `None` when the
+    /// examiner did not ask for a live check at all — which is the default,
+    /// and grades ABSENT rather than UNVERIFIABLE.
+    pub live: Option<&'a Result<LiveConsistency, String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionOutcome {
     #[serde(flatten)]
@@ -1386,6 +1552,26 @@ pub struct SessionOutcome {
     /// coverage, naming every mismatch and every absence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referenced_coverage: Option<ReferencedCoverage>,
+    /// Present only when the manifest carries a `witness` section: was this
+    /// session's head placed in a third party's append-only log, and does the
+    /// inclusion proof still recompute to a tree head signed by the witness
+    /// key the examiner pinned?
+    ///
+    /// A DIFFERENT QUESTION from every property above it, and it can never
+    /// answer any of them. A witnessed head says a log held these bytes at a
+    /// stated tree size at a stated time; it says nothing about whether the
+    /// entries under that head are true, and it does not stand in for the
+    /// chain verdict. ABSENT — the witness never saw this head — is not a
+    /// failure of anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness: Option<WitnessOutcome>,
+    /// Present only when the examiner asked for a live check
+    /// (`--witness-url`): is the tree the carried proof was checked against
+    /// still a prefix of the log as it stands now? OFF BY DEFAULT — this
+    /// verifier reaches no network unless told to — and a network failure is
+    /// UNVERIFIABLE with the reason, never a pass and never a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_consistency: Option<Status>,
     /// Producer-signature result: did the CAPTURE HOST's own key sign the
     /// carried camera records? A third distinct result beside chain-signature
     /// validity and signer trust — the O-Node chain key must never stand in
@@ -1464,6 +1650,17 @@ pub struct BoundaryReport {
     /// section, so pre-feature reports serialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referenced_artifact_binding: Option<ReferencedSummary>,
+    /// Did a third party's log hold these heads, and when did it say so? A
+    /// boundary question for the same reason the one above it is: for every
+    /// bundle exported before the exporter could ask, the answer is ABSENT,
+    /// and ABSENT is a statement about the evidence rather than a defect in
+    /// it. Deliberately NOT folded into the verdict: a chain that was never
+    /// witnessed is exactly as internally consistent as it was before
+    /// witnessing existed, and folding ABSENT inward would retroactively
+    /// downgrade every bundle ever produced. Omitted from a report whose
+    /// bundle has no witness section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness: Option<WitnessSummary>,
 }
 
 /// The weakest per-session `referenced_artifact_binding`, with counts.
@@ -1668,6 +1865,17 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         Some(ReferencedSummary { status: worst, detail })
     };
 
+    // Weakest link across sessions, and ABSENT outranks VERIFIED for the
+    // same reason it does above: a bundle where three of four heads were
+    // witnessed is not a witnessed bundle. It stays out of the verdict in
+    // both directions all the same.
+    let witness = if sessions.iter().all(|s| s.witness.is_none()) {
+        None
+    } else {
+        let outcomes: Vec<&WitnessOutcome> = sessions.iter().filter_map(|s| s.witness.as_ref()).collect();
+        Some(witness_summary(&outcomes))
+    };
+
     BoundaryReport {
         source_device_established: SourceDeviceReport {
             answer: SourceDeviceAnswer::No,
@@ -1679,6 +1887,7 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             groups,
         },
         referenced_artifact_binding,
+        witness,
     }
 }
 
@@ -1706,6 +1915,11 @@ pub struct BundleReport {
     /// never carries a producer key, only each record's `producer_key_id`.
     #[serde(default)]
     pub producer_key_ids: Vec<String>,
+    /// Witness PUBLIC keys the examiner supplied out of band
+    /// (`--witness-key`). Empty when none were supplied — the bundle carries
+    /// only the id the witness claimed for itself, never the key.
+    #[serde(default)]
+    pub witness_key_ids: Vec<String>,
     pub sessions: Vec<SessionOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal: Option<SealOutcome>,
@@ -1715,26 +1929,109 @@ pub struct BundleReport {
     /// is deliberately not an input — those axes report beside the verdict,
     /// never inside it (see the roll-up note on [`overall_verdict`]).
     pub verdict: Verdict,
+    /// The rendered top line ([`BundleReport::verdict_line`]) — the verdict
+    /// label plus every beside-the-verdict result that is FAILED.
+    ///
+    /// `verdict` above stays the untouched machine token; this is the string
+    /// the CLI and the viewer put at the top of the page, carried in the
+    /// JSON so a consumer that quotes a headline quotes the SAME headline a
+    /// reader sees. Earlier reports omitted it (the annotation existed only
+    /// in the rendered surfaces), which is why it is `serde(default)`: a
+    /// consumer must read `verdict` for the machine answer, never parse this.
+    #[serde(default)]
+    pub headline: String,
 }
 
 impl BundleReport {
     /// The top-line verdict as every surface renders it.
     ///
-    /// When a boundary result is FAILED, that fact rides in the line
-    /// itself, so the top line cannot be quoted in isolation while a result
-    /// literally named FAILED stands further down the page. The verdict,
-    /// its JSON value and the exit code are untouched — the axes stay
-    /// separate (a capture defect does not weaken the proof of the records
-    /// that exist) — but a defensible classification is not a license for a
-    /// top line that misleads a reader who stops there.
+    /// When a result on an axis that sits BESIDE the verdict is FAILED (or,
+    /// for a trust axis, MISMATCH), that fact rides in the line itself, so
+    /// the top line cannot be quoted in isolation while a result literally
+    /// named FAILED stands further down the page. The verdict, its JSON
+    /// value and the exit code are untouched — the axes stay separate (a
+    /// capture defect does not weaken the proof of the records that exist,
+    /// and the capture host's key is not the O-Node's) — but a defensible
+    /// classification is not a license for a top line that misleads a reader
+    /// who stops there.
     pub fn verdict_line(&self) -> String {
-        let v = self.verdict.label();
-        match &self.boundary.capture_completeness.grade {
-            CaptureGrade::Failed { .. } => {
-                format!("{v} — boundary result capture_completeness FAILED (beside this verdict, not inside it)")
-            }
-            _ => v.to_owned(),
+        let mut line = self.verdict.label().to_owned();
+        for (i, note) in self.headline_annotations().into_iter().enumerate() {
+            // The em dash marks the one boundary between the verdict and
+            // everything standing beside it; further results are a list
+            // inside that clause, not further verdicts.
+            line.push_str(if i == 0 { " — " } else { "; " });
+            line.push_str(&note);
         }
+        line
+    }
+
+    /// Every beside-the-verdict result that must appear in the top line, in
+    /// a fixed order.
+    ///
+    /// The rule is deliberately uniform: an axis reported FAILED anywhere in
+    /// this report is named here, whatever the verdict is. A FAILED verdict
+    /// that also carries a FAILED annotation is redundant but truthful, and
+    /// the rule stays simple enough to test.
+    ///
+    /// `producer_signature` and `producer_trust` are per SESSION (the
+    /// producer object hangs off each [`SessionOutcome`], not off
+    /// [`BoundaryReport`]), so those annotations name the sessions rather
+    /// than carrying the "beside this verdict" clause. Naming them is the
+    /// point: a bundle whose chain verifies while ONE session's camera
+    /// bodies fail under the capture host's key is exactly the report a
+    /// reader would otherwise quote as clean.
+    pub fn headline_annotations(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if matches!(self.boundary.capture_completeness.grade, CaptureGrade::Failed { .. }) {
+            notes.push("boundary result capture_completeness FAILED (beside this verdict, not inside it)".to_owned());
+        }
+        let named = |sessions: Vec<&str>| match sessions.len() {
+            0 => None,
+            1 => Some(format!("session {}", sessions[0])),
+            _ => Some(format!("sessions {}", sessions.join(", "))),
+        };
+        // Producer signature validity: the capture host's own key over the
+        // camera record bodies. FAILED is checked-and-wrong, and it never
+        // moves the chain verdict — the two keys are different trust
+        // boundaries and neither stands in for the other.
+        if let Some(who) = named(
+            self.sessions
+                .iter()
+                .filter(|s| s.producer.signature_validity.is_failed())
+                .map(|s| s.report.session_id.as_str())
+                .collect(),
+        ) {
+            notes.push(format!("boundary result producer_signature FAILED ({who})"));
+        }
+        // Producer trust: the examiner supplied producer keys and these
+        // records do not verify under any of them. A stated expectation the
+        // evidence does not meet — reported at the same volume as a failure,
+        // in the trust vocabulary rather than the status one.
+        if let Some(who) = named(
+            self.sessions
+                .iter()
+                .filter(|s| s.producer.trust == SignerTrust::Mismatch)
+                .map(|s| s.report.session_id.as_str())
+                .collect(),
+        ) {
+            notes.push(format!("boundary result producer_trust MISMATCH ({who})"));
+        }
+        // Witness: an inclusion proof that does not recompute. This one DOES
+        // also move the verdict (see `overall_verdict`) — the annotation is
+        // then redundant with a FAILED top line, and kept anyway: the rule
+        // is "a FAILED beside-the-verdict result is named", without an
+        // exception a reader would have to know about.
+        if let Some(who) = named(
+            self.sessions
+                .iter()
+                .filter(|s| s.witness.as_ref().is_some_and(|w| w.status.is_failed()))
+                .map(|s| s.report.session_id.as_str())
+                .collect(),
+        ) {
+            notes.push(format!("boundary result witness FAILED ({who})"));
+        }
+        notes
     }
 }
 
@@ -1768,6 +2065,17 @@ fn overall_verdict(sessions: &[SessionOutcome], seal: Option<&SealOutcome>) -> V
             // referenced artifacts is not a wrong bundle, and every bundle
             // exported before the exporter could carry them is ABSENT.
             || s.referenced_artifact_binding.as_ref().is_some_and(Status::is_failed)
+            // An inclusion proof that does not recompute is a cryptographic
+            // inconsistency IN THIS BUNDLE — the carried leaf, the carried
+            // audit path and the signed tree head do not agree — so it fails
+            // the verdict exactly as a mismatched artifact body does. Only
+            // FAILED does. ABSENT (the witness never saw this head) and
+            // UNVERIFIABLE (no witness key was supplied, or the head signs
+            // under a key nobody pinned) leave the verdict alone: neither is
+            // a statement that anything is wrong, and a witness must never be
+            // able to move a chain verdict upward or downward by being
+            // missing, unreachable or unpinned.
+            || s.witness.as_ref().is_some_and(|w| w.status.is_failed())
     });
     if any_failed || seal_failed {
         return Verdict::Failed;
@@ -1879,5 +2187,223 @@ mod tests {
     fn no_sessions_produces_no_group_lines() {
         let rows: Vec<(String, CaptureGrade)> = Vec::new();
         assert!(capture_group_lines(rows.iter().map(|(id, g)| (id.as_str(), g))).is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // The headline rule: every FAILED beside-the-verdict result is named
+    // in the top line, and none of them moves the verdict token.
+    // -----------------------------------------------------------------
+
+    use super::{
+        BoundaryReport, BundleReport, CaptureSummary, SessionOutcome, SourceDeviceAnswer, SourceDeviceReport,
+        REPORT_VERSION,
+    };
+    use crate::camera::{CaptureReport, SensorSummary};
+    use crate::producer::ProducerSignerReport;
+    use crate::verify::{SessionReport, SignerReport, SignerTrust, Status, Verdict};
+    use crate::witness::WitnessOutcome;
+
+    /// A session whose every axis is clean, to be spoiled one axis at a
+    /// time. Nothing here is graded — these are report values, and the
+    /// rule under test is a rendering rule over them.
+    fn clean_session(id: &str) -> SessionOutcome {
+        SessionOutcome {
+            report: SessionReport {
+                session_id: id.to_owned(),
+                entry_count: 1,
+                signing_key_id: None,
+                properties: Vec::new(),
+                signer: SignerReport {
+                    signature_validity: Status::Verified,
+                    trust: SignerTrust::Pinned,
+                    trust_source: None,
+                    detail: String::new(),
+                },
+                verdict: Verdict::CryptographicallyVerified,
+            },
+            seal_head_match: None,
+            artifact_binding: Some(Status::Verified),
+            artifact_coverage: None,
+            referenced_artifact_binding: None,
+            referenced_coverage: None,
+            witness: None,
+            witness_consistency: None,
+            producer: ProducerSignerReport {
+                signature_validity: Status::Verified,
+                trust: SignerTrust::Pinned,
+                trust_source: None,
+                detail: String::new(),
+                claimed_key_ids: Vec::new(),
+            },
+            capture_completeness: CaptureReport {
+                grade: CaptureGrade::Continuous,
+                detail: String::new(),
+                camera_records: 1,
+                policies: Vec::new(),
+                outages: Vec::new(),
+                overlaps: Vec::new(),
+                external_predecessor_gaps: Vec::new(),
+            },
+            sensor: SensorSummary::default(),
+        }
+    }
+
+    fn report_of(sessions: Vec<SessionOutcome>, verdict: Verdict, capture: CaptureGrade) -> BundleReport {
+        let mut r = BundleReport {
+            docket_report_version: REPORT_VERSION.to_owned(),
+            bundle_version: super::BUNDLE_VERSION.to_owned(),
+            chain_format: super::CHAIN_FORMAT.to_owned(),
+            key_ids: Vec::new(),
+            pinned_key_ids: Vec::new(),
+            bundle_key_ids: Vec::new(),
+            producer_key_ids: Vec::new(),
+            witness_key_ids: Vec::new(),
+            sessions,
+            seal: None,
+            boundary: BoundaryReport {
+                source_device_established: SourceDeviceReport {
+                    answer: SourceDeviceAnswer::No,
+                    detail: String::new(),
+                },
+                capture_completeness: CaptureSummary {
+                    grade: capture,
+                    detail: String::new(),
+                    groups: Vec::new(),
+                },
+                referenced_artifact_binding: None,
+                witness: None,
+            },
+            verdict,
+            headline: String::new(),
+        };
+        r.headline = r.verdict_line();
+        r
+    }
+
+    /// The clean case: nothing beside the verdict failed, so the top line
+    /// is exactly the verdict and nothing else.
+    #[test]
+    fn a_clean_report_headline_is_the_bare_verdict() {
+        let r = report_of(
+            vec![clean_session("camera:a:2026-09-04")],
+            Verdict::CryptographicallyVerified,
+            CaptureGrade::Continuous,
+        );
+        assert_eq!(r.verdict_line(), "CRYPTOGRAPHICALLY-VERIFIED");
+        assert_eq!(r.headline, r.verdict_line());
+        assert!(r.headline_annotations().is_empty());
+    }
+
+    /// The requirement: an intact chain whose CAPTURE HOST signature is
+    /// checked and wrong cannot be quoted as a clean verified result. The
+    /// verdict token is untouched — the producer key is a different trust
+    /// boundary from the O-Node chain key, and a failure at one does not
+    /// re-grade the other.
+    #[test]
+    fn a_failed_producer_signature_is_named_in_the_headline() {
+        let mut s = clean_session("camera:a:2026-09-04");
+        s.producer.signature_validity = Status::failed("1 of 8 producer signature(s) does not verify");
+        let r = report_of(vec![s], Verdict::CryptographicallyVerified, CaptureGrade::Continuous);
+        assert_eq!(
+            r.verdict_line(),
+            "CRYPTOGRAPHICALLY-VERIFIED — boundary result producer_signature FAILED \
+             (session camera:a:2026-09-04)"
+        );
+        assert_eq!(r.headline, r.verdict_line());
+        assert_eq!(
+            r.verdict,
+            Verdict::CryptographicallyVerified,
+            "the verdict token is untouched"
+        );
+    }
+
+    /// MISMATCH is the trust vocabulary's failure and is named at the same
+    /// volume: the examiner stated an expectation and the evidence does not
+    /// meet it.
+    #[test]
+    fn a_producer_trust_mismatch_is_named_in_the_headline() {
+        let mut s = clean_session("camera:a:2026-09-04");
+        s.producer.trust = SignerTrust::Mismatch;
+        let r = report_of(vec![s], Verdict::CryptographicallyVerified, CaptureGrade::Continuous);
+        assert_eq!(
+            r.verdict_line(),
+            "CRYPTOGRAPHICALLY-VERIFIED — boundary result producer_trust MISMATCH \
+             (session camera:a:2026-09-04)"
+        );
+    }
+
+    /// A witness proof that does not recompute is named too — redundantly
+    /// with the FAILED verdict it also causes, on purpose: the rule is
+    /// "a FAILED beside-the-verdict result appears in the top line", with
+    /// no exception a reader would have to know about.
+    #[test]
+    fn a_failed_witness_is_named_in_the_headline() {
+        let mut s = clean_session("camera:a:2026-09-04");
+        s.witness = Some(WitnessOutcome {
+            status: Status::failed("the audit path does not recompute to the signed tree head"),
+            detail: String::new(),
+            trust: SignerTrust::Pinned,
+            head_existed_by: None,
+            tree_size: None,
+            leaf_index: None,
+            submitter_signature: None,
+        });
+        let r = report_of(vec![s], Verdict::Failed, CaptureGrade::Continuous);
+        assert_eq!(
+            r.verdict_line(),
+            "FAILED — boundary result witness FAILED (session camera:a:2026-09-04)"
+        );
+    }
+
+    /// Several failures render as one clause listing all of them, in a
+    /// fixed order, with the capture wording unchanged from before there
+    /// was more than one annotation.
+    #[test]
+    fn every_failed_axis_appears_in_a_fixed_order() {
+        let mut a = clean_session("camera:a:2026-09-04");
+        a.producer.signature_validity = Status::failed("does not verify");
+        a.producer.trust = SignerTrust::Mismatch;
+        let mut b = clean_session("camera:b:2026-09-04");
+        b.producer.trust = SignerTrust::Mismatch;
+        let r = report_of(
+            vec![a, b],
+            Verdict::CryptographicallyVerified,
+            CaptureGrade::Failed {
+                detail: "a record carries no usable policy".to_owned(),
+            },
+        );
+        assert_eq!(
+            r.verdict_line(),
+            "CRYPTOGRAPHICALLY-VERIFIED — boundary result capture_completeness FAILED (beside this \
+             verdict, not inside it); boundary result producer_signature FAILED (session \
+             camera:a:2026-09-04); boundary result producer_trust MISMATCH (sessions \
+             camera:a:2026-09-04, camera:b:2026-09-04)"
+        );
+    }
+
+    /// UNVERIFIABLE and UNESTABLISHED are not failures and never reach the
+    /// top line: no producer key supplied is the default posture of every
+    /// examiner who has not been given one, and a headline that shouted
+    /// about it would say nothing about the evidence.
+    #[test]
+    fn an_ungraded_producer_axis_leaves_the_headline_bare() {
+        let mut s = clean_session("camera:a:2026-09-04");
+        s.producer.signature_validity = Status::unverifiable("no producer public key was supplied");
+        s.producer.trust = SignerTrust::Unestablished;
+        s.witness = Some(WitnessOutcome {
+            status: Status::Absent,
+            detail: String::new(),
+            trust: SignerTrust::Unestablished,
+            head_existed_by: None,
+            tree_size: None,
+            leaf_index: None,
+            submitter_signature: None,
+        });
+        let r = report_of(
+            vec![s],
+            Verdict::CryptographicallyVerified,
+            CaptureGrade::InterruptedUnexplained,
+        );
+        assert_eq!(r.verdict_line(), "CRYPTOGRAPHICALLY-VERIFIED");
     }
 }

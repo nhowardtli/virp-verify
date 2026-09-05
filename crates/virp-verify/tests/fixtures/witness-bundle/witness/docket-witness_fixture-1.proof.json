@@ -1,0 +1,18 @@
+{
+  "v": "docket-witness-proof/1",
+  "session_id": "docket-witness:fixture-1",
+  "leaf": {
+    "chain_id": "d70f3717ca6ed2de79fa2e1eca4b06a58f0ccc4f0eb72c1cf185b569318a46f9",
+    "sequence": 5,
+    "head_hash": "fe4888eabb8263b93f2286571cabcc70fb02632babd7f36b46f0976e76bcdf2a",
+    "key_id": "24f6ed6acbfe1009c030d7ca567c33ca",
+    "signature": "17e466ee459e160f25c4b75998a083c08d058b1e947321abdeb1c6e28ecbf91ca237c7fd3455f9e63fb5445e184f539e55229775a1731d017cd44333f4c8da0e",
+    "timestamp": "2026-09-05T01:37:43.057Z"
+  },
+  "leaf_index": 2,
+  "tree_size": 3,
+  "audit_path": [
+    "296cd8c9501fb45bcc46e7622a17843d4c273a7ff24a9ecf0179608c3dbf4021"
+  ],
+  "proof_served": "{\"leaf_index\":2,\"tree_size\":3,\"root_hash\":\"b4e74d39fe667e004b44172732bb20b91754db17608bf0d75d7406beaa2d8acf\",\"inclusion_proof\":[\"296cd8c9501fb45bcc46e7622a17843d4c273a7ff24a9ecf0179608c3dbf4021\"]}"
+}

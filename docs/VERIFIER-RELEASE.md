@@ -16,8 +16,11 @@ You can conclude: **the bytes you have are the bytes whoever wrote
 You cannot conclude: that those bytes came from this source, or from anyone
 in particular. A hash published beside the file it describes, on a page
 controlled by whoever produced both, is a download-integrity check and
-nothing more. Nothing in this release is signed, and this document will not
-imply otherwise.
+nothing more. The 0.1.0 and 0.1.1 releases attach a minisign signature over
+`SHA256SUMS`, which raises that to "someone holding the seal key vouched for
+this list" and no further: it still does not tell you who holds that key.
+What `build-verifier.sh` writes is unsigned, and this document will not imply
+otherwise.
 
 If that is not good enough for what you are doing — and for evidence work it
 should not be — **build it yourself** from the source. It takes one command
@@ -29,8 +32,10 @@ and produces the same bytes; see *Reproducibility* below.
 sha256sum -c SHA256SUMS
 ```
 
-Run it in the directory holding both files. It prints `virp-verify: OK` or
-it fails. If you were given the hash by some other route than the file next
+Run it in the directory the `SHA256SUMS` names its files relative to — for a
+release download, the directory holding them; for a local build, `dist/`. It
+prints `OK` for each file it names, or it fails.
+If you were given the hash by some other route than the file next
 to the binary — a different channel, a different person, a printout — that
 comparison is worth more, and it is the only version of this check that adds
 anything.
@@ -53,12 +58,14 @@ repository — you do not pass a version anywhere. If you do not have rustup:
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add x86_64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl   # if you want the arm build too
 ```
 
 `rustup target add` is the only step that needs the network beyond the
 initial install and the crate download. The musl target is what makes the
 result a single file that runs on a machine with no Rust, no `libc` and no
-shell.
+shell. Add whichever of the two you intend to run; the script builds what
+you have installed and skips the rest.
 
 ### The command
 
@@ -69,15 +76,35 @@ tools/release/build-verifier.sh
 That is the whole recipe. It:
 
 1. prints the exact `rustc` and `cargo` versions it is about to use;
-2. builds `virp-verify` for `x86_64-unknown-linux-musl` with `--locked`, so
-   the dependency versions are the ones in `Cargo.lock` and not whatever is
-   newest today;
-3. strips the binary;
-4. writes `SHA256SUMS` beside it;
-5. prints the hash and the command to check it.
+2. builds `virp-verify` for each installed target in
+   `x86_64-unknown-linux-musl aarch64-unknown-linux-musl` with `--locked`,
+   so the dependency versions are the ones in `Cargo.lock` and not whatever
+   is newest today, and names any target it skipped;
+3. strips each binary;
+4. writes one `SHA256SUMS` naming all of them;
+5. prints the hashes and the command to check them.
 
-Output lands in `dist/virp-verify-<version>-x86_64-unknown-linux-musl/`.
-Pass a directory as the first argument to put it elsewhere.
+Output lands in `dist/virp-verify-<version>-<target>/`, with
+`dist/SHA256SUMS` covering every target built. Pass a directory as the first
+argument to put it elsewhere, or set `TARGETS` to override the list.
+
+### The two targets are built by different machinery
+
+x86_64 links with the host `cc` and is stripped afterwards by the host
+`strip`. That pipeline produced the published 0.1.0 hash and is left exactly
+as it was.
+
+aarch64 cannot use either on an x86_64 host: GNU `strip` does not recognise
+the format, and the host `cc` cannot link for another architecture. So it
+links with the `rust-lld` that ships with the pinned toolchain and has
+`rustc` strip at link time (`-C linker=rust-lld -C strip=symbols`) — the same
+way on every host, so the arm build does not depend on which machine
+cross-compiled it.
+
+**The two hashes are not comparable and never will be.** Different machine
+code from the same source is a different file. There is no published aarch64
+hash to check against: the reproducibility claim below has been exercised on
+x86_64-musl only.
 
 The script does not sign, tag, publish or upload anything, and it never
 will: those are decisions for a person.
@@ -112,7 +139,8 @@ Build 3 is the one that matters: a rebuild in place proves little, and two
 different paths producing one hash is the claim.
 
 What is **not** pinned, and would change the bytes: a different `rustc`
-(hence the `rust-toolchain.toml` pin), a different target, different
+(hence the `rust-toolchain.toml` pin), a different target (see *The two
+targets are built by different machinery* above), different
 dependency versions (hence `--locked`), and a different `strip`. Reproduce
 on the pinned toolchain or expect a different hash — a mismatch means "these
 were built differently", not "this one is bad".
@@ -124,7 +152,8 @@ Sep 1 reference bundle: byte-identical stdout and the same exit code. If you
 build both, you can repeat that:
 
 ```
-diff <(./dist/*/virp-verify BUNDLE) <(cargo run --release -q -p virp-verify -- BUNDLE)
+diff <(./dist/virp-verify-*-x86_64-unknown-linux-musl/virp-verify BUNDLE) \
+     <(cargo run --release -q -p virp-verify -- BUNDLE)
 ```
 
 ## Running it

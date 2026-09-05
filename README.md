@@ -1,4 +1,4 @@
-# virp-verify 0.1.2
+# virp-verify 0.1.3
 
 `virp-verify` reads a VIRP evidence bundle, recomputes its hashes, chain links,
 Ed25519 signatures and RFC 9162 witness proofs, and prints which properties
@@ -15,10 +15,10 @@ your path.
 
 ```sh
 keys=https://raw.githubusercontent.com/nhowardtli/virp-verify/411d008a04eb9a52b3ade9a4afe58ae4b358099b/keys
-mkdir -p virp-verify-0.1.2 && cd virp-verify-0.1.2
+mkdir -p virp-verify-0.1.3 && cd virp-verify-0.1.3
 # Every release asset except the keys — those come from the commit above, which
 # is dated and cannot be replaced, unlike a file attached to a release page.
-curl -fsSL https://api.github.com/repos/nhowardtli/virp-verify/releases/tags/virp-verify-v0.1.2 \
+curl -fsSL https://api.github.com/repos/nhowardtli/virp-verify/releases/tags/virp-verify-v0.1.3 \
   | jq -r '.assets[].browser_download_url' | grep -vE '\.(hex|keys\.json)$' \
   | xargs -n1 curl -fsSLO
 for k in $(grep -oE '[^ ]+\.(hex|keys\.json)$' SHA256SUMS) seal-virp-ad48b20f-2026-09-05.pub; do
@@ -135,7 +135,7 @@ builds both musl targets, skips any you have not added, and writes
 now, not a coincidence:
 
 ```sh
-git checkout virp-verify-v0.1.2
+git checkout virp-verify-v0.1.3
 tools/release/build-verifier.sh
 ```
 

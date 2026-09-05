@@ -780,6 +780,23 @@ fn render_text(
                 .map(docket_bundle::ReferencedCoverage::detail)
                 .unwrap_or_default();
             out.push_str(&status_line("referenced_artifact_binding", binding, &detail));
+            // A claimed declaration that did not hold up is named, not just
+            // counted: someone wrote down that these bytes were deleted on
+            // purpose, and this verifier could not confirm it.
+            for f in s
+                .referenced_coverage
+                .as_ref()
+                .map(|c| c.declaration_failures.as_slice())
+                .unwrap_or_default()
+            {
+                let pointer = match (&f.retention_session, f.retention_sequence) {
+                    (Some(sess), Some(seq)) => format!("claimed declared by {sess} seq {seq}"),
+                    // No pointer to print: naming one would invent it.
+                    _ => "claims a declaration it does not identify".to_owned(),
+                };
+                let why = format!("seq {} cites {}, {} — {}", f.sequence, f.cited, pointer, f.why);
+                let _ = writeln!(out, "  {:<22} {:<38} {}", "", "declaration NOT honoured", why);
+            }
         }
         // A third party's log, and the third clock that comes with it. Its
         // own rows, deliberately: nothing here is a statement about the
@@ -867,6 +884,20 @@ fn render_text(
             cc.grade.label(),
             cc.detail
         );
+        // Retention declarations: what this session says was deleted on
+        // purpose. Listed, never graded here and never counted as capture —
+        // their signatures are graded above, with every other
+        // producer-signed body.
+        for d in &s.retention_declarations {
+            let what = format!("seq {} {}", d.sequence, d.tier.as_deref().unwrap_or("tier?"));
+            let claims = format!(
+                "camera {} — policy_days {}, removed_count {}",
+                d.camera_id.as_deref().unwrap_or("?"),
+                d.policy_days.map_or("?".to_owned(), |v| v.to_string()),
+                d.removed_count.map_or("?".to_owned(), |v| v.to_string())
+            );
+            let _ = writeln!(out, "  {:<22} {:<38} {}", "retention declaration", what, claims);
+        }
         render_sensor_summary(&mut out, &s.sensor);
         for g in &cc.external_predecessor_gaps {
             let _ = writeln!(
@@ -1013,7 +1044,7 @@ fn render_text(
     );
     let _ = writeln!(
         out,
-        "  The bundle carries only each record's producer_key_id, never the producer key: the key must arrive out of band (--producer-key), and producer trust uses the signer-trust vocabulary above, applied to the producer key."
+        "  The bundle carries only each record's producer_key_id, never the producer key: the key must arrive out of band (--producer-key), and producer trust uses the signer-trust vocabulary above, applied to the producer key. Both camera_segment/* and camera_retention/* bodies are producer-signed and are graded here by the same code and the same vocabulary. A carried body of any OTHER schema grades ABSENT saying the schema was not examined by this verifier — never a pass, because an unexamined body must not read as a checked one."
     );
     let _ = writeln!(
         out,
@@ -1041,7 +1072,7 @@ fn render_text(
     );
     let _ = writeln!(
         out,
-        "What referenced_artifact_binding covers: the artifacts a camera record cites by digest — the segment video (segment_sha256), the validator's own output about it (sensor_signature.validator_output_sha256), and from /6 the device leaf certificate in DER (sensor_signature.device_chain.leaf_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256 (the digest is over the key as the SEI presents it, which the bundle does not carry), and device_chain.anchor_sha256 (the pinned CA is the examiner's own file, held out of band, never shipped inside the evidence it anchors)."
+        "What referenced_artifact_binding covers: the artifacts a camera record cites by digest — the segment video (segment_sha256), the validator's own output about it (sensor_signature.validator_output_sha256), and from /6 the device leaf certificate in DER (sensor_signature.device_chain.leaf_sha256). When the bundle carries them, this verifier recomputes SHA-256 over the carried bytes and compares against the citing field; which digests are cited is re-derived from the signed bodies, never read from the unsigned manifest. It grades ABSENT — never a pass — for a citation whose file the bundle does not carry. When a carried camera_retention/* record names that digest in removed[], the citation still grades ABSENT, distinguished as declared by that record: the operator DECLARED the deletion under a producer key at a chained time. That declaration is honoured only after this verifier re-reads the named record and re-checks it — carried, hashing to its artifact_hash, producer-signed under a supplied --producer-key, and actually listing the digest. A record the bundle does not carry, or one that fails any of those, leaves the citation plain ABSENT and the failed claim is printed. A declaration never proves the bytes matched their digest on the way out — nothing re-verified them — and it never upgrades an absence into a pass. Still NOT recomputed here: prev_segment_sha256 as a chain of files, sensor_key_sha256 (the digest is over the key as the SEI presents it, which the bundle does not carry), and device_chain.anchor_sha256 (the pinned CA is the examiner's own file, held out of band, never shipped inside the evidence it anchors)."
     );
     // Stated in full, and stated even when nothing was witnessed: a reader
     // who sees "witness VERIFIED" somewhere must be able to find here exactly

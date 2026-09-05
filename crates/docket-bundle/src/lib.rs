@@ -27,22 +27,26 @@ pub use bundle::{
     ReferencedSummary, SourceDeviceAnswer, SourceDeviceReport, WitnessCheck, REPORT_VERSION,
 };
 pub use camera::{
-    cited_digests, claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureOutage,
-    CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap, SensorSummary, CITED_LEAF, CITED_SEGMENT,
-    CITED_VALIDATOR_OUTPUT, SENSOR_CAPTION,
+    cited_digests, claimed_camera_ids, grade_capture_completeness, retention_declarations, summarise_sensor,
+    CaptureGrade, CaptureOutage, CaptureOverlap, CapturePolicy, CaptureReport, ExternalPredecessorGap,
+    RetentionDeclaration, SensorSummary, CITED_LEAF, CITED_SEGMENT, CITED_VALIDATOR_OUTPUT, SENSOR_CAPTION,
 };
 pub use canonical::{genesis_hash_hex, EntryFields, HeadFields, GENESIS_PREFIX, HEAD_VERSION_TAG};
 pub use hash::{key_id_hex, sha256, sha256_hex};
 pub use limits::Limits;
 pub use minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
-pub use producer::{canonical_json_bytes, grade_producer_signatures, read_producer_key_file, ProducerSignerReport};
+pub use producer::{
+    canonical_json_bytes, grade_producer_signatures, is_producer_signed_schema, read_producer_key_file,
+    ProducerSignerReport,
+};
 pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};
 pub use verify::{
     grade_artifact_binding, grade_referenced_artifact_binding, verify_session, ArtifactCoverage, ArtifactStore,
-    CarriedReferenced, ChainEntry, ChainHead, DetachedSignature, Keyring, NotCarried, PropertyReport,
-    ReferencedCoverage, ReferencedDefect, ReferencedEntry, ReferencedStore, SessionChain, SessionReport, SignerReport,
-    SignerTrust, Status, TrustSource, Verdict,
+    CarriedReferenced, ChainEntry, ChainHead, DeclarationFailure, DetachedSignature, Keyring, NotCarried,
+    PropertyReport, ReferencedCoverage, ReferencedDefect, ReferencedEntry, ReferencedStore, RetentionEvidence,
+    SessionChain, SessionReport, SignerReport, SignerTrust, Status, TrustSource, Verdict,
+    REASON_ABSENT_BY_DECLARED_POLICY,
 };
 pub use witness::{
     grade_witness, grade_witness_consistency, leaf_hash, node_hash, verify_consistency, verify_inclusion,

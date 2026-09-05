@@ -560,6 +560,42 @@ pub enum NotCarried {
     NotFound,
     /// A directory or file the exporter was not permitted to read.
     Inaccessible,
+    /// The exporter found no bytes, and a `camera_retention/*` record in
+    /// the exported session set names this digest in `removed[]` — the
+    /// operator DECLARED the deletion under a producer key at a chained
+    /// time (camera/RETENTION.md §5).
+    ///
+    /// This is a definite absence, not an open question, so it never
+    /// reaches UNVERIFIABLE. It is also never a pass: the declaration says
+    /// the operator claims to have deleted the bytes on purpose, not that
+    /// the bytes ever matched their digest — nothing re-verified them on
+    /// the way out. The claim is only honoured after the named record is
+    /// re-checked here; a record the bundle does not carry, or one that
+    /// fails its own producer/chain checks, leaves the citation plain
+    /// ABSENT.
+    ///
+    /// `retention_session` rides alongside the sequence because chain
+    /// sequences are PER SESSION and every session starts at 0: a bare
+    /// `retention_sequence: 0` would equally name the citing session's own
+    /// first record. §5's example field is kept and qualified, not
+    /// replaced.
+    AbsentByDeclaredPolicy {
+        retention_sequence: i64,
+        retention_session: String,
+    },
+    /// `absent_by_declared_policy` that does not name BOTH
+    /// `retention_session` and `retention_sequence`. Spec §5 makes the pair
+    /// required, so this citation is MALFORMED — the exporter wrote a
+    /// declaration it cannot substantiate — rather than merely unresolved.
+    ///
+    /// It grades ABSENT, naming the field that is missing, and never
+    /// UNVERIFIABLE: UNVERIFIABLE says the evidence could not be looked at,
+    /// and this is a defect in the manifest, not a question about the
+    /// evidence. Nor is it folded into plain `NotFound`, which would hide
+    /// that someone wrote a claim here at all.
+    MalformedDeclaration {
+        missing: String,
+    },
     /// A reason string this verifier does not recognise. Kept verbatim
     /// rather than folded into NotFound: an unknown reason is not a known
     /// absence, and guessing which one it is would be the same collapse
@@ -567,11 +603,39 @@ pub enum NotCarried {
     Other(String),
 }
 
+pub const REASON_ABSENT_BY_DECLARED_POLICY: &str = "absent_by_declared_policy";
+
 impl NotCarried {
     pub fn from_reason(reason: Option<&str>) -> NotCarried {
+        NotCarried::from_manifest(reason, None, None)
+    }
+
+    /// Build from the manifest's `reason` plus the fields that qualify it.
+    ///
+    /// `absent_by_declared_policy` WITHOUT both a sequence and a session is
+    /// not a usable declaration, and is kept as `Other` rather than
+    /// silently downgraded to `NotFound`: an unresolvable claim is an
+    /// unknown reason, and this verifier says so instead of guessing which
+    /// record was meant.
+    pub fn from_manifest(reason: Option<&str>, sequence: Option<i64>, session: Option<&str>) -> NotCarried {
         match reason {
             None | Some("not_found") => NotCarried::NotFound,
             Some("eacces") => NotCarried::Inaccessible,
+            Some(REASON_ABSENT_BY_DECLARED_POLICY) => match (sequence, session) {
+                (Some(retention_sequence), Some(session)) => NotCarried::AbsentByDeclaredPolicy {
+                    retention_sequence,
+                    retention_session: session.to_owned(),
+                },
+                (Some(_), None) => NotCarried::MalformedDeclaration {
+                    missing: "retention_session".to_owned(),
+                },
+                (None, Some(_)) => NotCarried::MalformedDeclaration {
+                    missing: "retention_sequence".to_owned(),
+                },
+                (None, None) => NotCarried::MalformedDeclaration {
+                    missing: "retention_session and retention_sequence".to_owned(),
+                },
+            },
             Some(other) => NotCarried::Other(other.to_owned()),
         }
     }
@@ -580,7 +644,10 @@ impl NotCarried {
     /// An inaccessible artifact was never examined; an unrecognised reason
     /// is treated the same way, because this verifier cannot say it was.
     pub fn is_unverifiable(&self) -> bool {
-        !matches!(self, NotCarried::NotFound)
+        !matches!(
+            self,
+            NotCarried::NotFound | NotCarried::AbsentByDeclaredPolicy { .. } | NotCarried::MalformedDeclaration { .. }
+        )
     }
 
     pub fn label(&self) -> String {
@@ -591,6 +658,16 @@ impl NotCarried {
                  so it was never looked at"
                     .to_owned()
             }
+            NotCarried::AbsentByDeclaredPolicy {
+                retention_sequence,
+                retention_session,
+            } => format!(
+                "not carried, declared by retention record seq {retention_sequence} in session \
+                 {retention_session}"
+            ),
+            NotCarried::MalformedDeclaration { missing } => format!(
+                "not carried; the declaration is malformed — {REASON_ABSENT_BY_DECLARED_POLICY} without {missing}"
+            ),
             NotCarried::Other(r) => format!("not carried, for a reason this verifier does not know ({r:?})"),
         }
     }
@@ -633,6 +710,13 @@ pub struct ReferencedCoverage {
     pub citations: usize,
     pub verified: usize,
     pub absent: usize,
+    /// The subset of `absent` a verified retention record declares. NOT a
+    /// fourth bucket: every citation still lands in exactly one of
+    /// verified / absent / inaccessible / failed, and this annotates how
+    /// many of the absences were accounted for. `absent - absent_declared`
+    /// is the undeclared remainder, which is what an examiner chases.
+    #[serde(default)]
+    pub absent_declared: usize,
     /// Citations the exporter could not look at. NOT folded into `absent`:
     /// a blind look is not a finding.
     #[serde(default)]
@@ -642,6 +726,27 @@ pub struct ReferencedCoverage {
     pub failures: Vec<ReferencedDefect>,
     /// Citations the bundle carries no bytes for, for any reason.
     pub absences: Vec<ReferencedDefect>,
+    /// Declarations that were claimed and did not hold up. Reported so a
+    /// reader sees that someone asserted a policy deletion this verifier
+    /// could not confirm — silence here would be indistinguishable from
+    /// "nobody claimed anything".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declaration_failures: Vec<DeclarationFailure>,
+}
+
+/// An `absent_by_declared_policy` claim that did not survive re-checking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarationFailure {
+    /// Chain sequence of the CITING record.
+    pub sequence: i64,
+    pub cited: String,
+    /// The record the citation POINTS AT. Absent when the pointer itself was
+    /// malformed — there is no record to name, which is the defect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_sequence: Option<i64>,
+    pub why: String,
 }
 
 impl ReferencedCoverage {
@@ -661,7 +766,16 @@ impl ReferencedCoverage {
             s.push_str(&format!("; {} mismatched", self.failed));
         }
         if self.absent > 0 {
-            s.push_str(&format!("; {} not carried — ABSENT, not a pass", self.absent));
+            let undeclared = self.absent - self.absent_declared;
+            if self.absent_declared > 0 {
+                s.push_str(&format!(
+                    "; {} not carried — ABSENT, not a pass ({} declared by a verified retention \
+                     record, {undeclared} undeclared)",
+                    self.absent, self.absent_declared
+                ));
+            } else {
+                s.push_str(&format!("; {} not carried — ABSENT, not a pass", self.absent));
+            }
         }
         if self.inaccessible > 0 {
             s.push_str(&format!(
@@ -669,7 +783,133 @@ impl ReferencedCoverage {
                 self.inaccessible
             ));
         }
+        if !self.declaration_failures.is_empty() {
+            s.push_str(&format!(
+                "; {} claimed retention declaration(s) did NOT verify and were not honoured",
+                self.declaration_failures.len()
+            ));
+        }
         s
+    }
+}
+
+/// The material needed to re-check an `absent_by_declared_policy` claim.
+///
+/// The retention record lives in its OWN session
+/// (`camera-retention:<camera>:<date>`), not the citing camera session, so
+/// resolving one means reaching across the bundle's whole session set —
+/// hence the slice rather than the single chain the grader walks.
+pub struct RetentionEvidence<'a> {
+    pub chains: &'a [SessionChain],
+    /// Examiner-supplied producer keys (`--producer-key`). Empty means a
+    /// declaration can never be honoured: an unverified producer signature
+    /// is not a declaration, it is an assertion.
+    pub producer_keys: &'a [crate::sig::PublicKey],
+}
+
+impl RetentionEvidence<'_> {
+    /// `Ok(())` when the named record is carried, chain-bound,
+    /// producer-signed under a supplied key, and actually lists `digest` in
+    /// `removed[]`. `Err(why)` otherwise — and `why` is reported, never
+    /// swallowed: a declaration that does not hold up is a finding.
+    pub fn check(
+        &self,
+        store: Option<&ArtifactStore>,
+        session_id: &str,
+        sequence: i64,
+        digest: &str,
+    ) -> Result<(), String> {
+        let Some(store) = store else {
+            return Err(
+                "the bundle carries no artifact bodies, so the retention record it names \
+                        cannot be read"
+                    .to_owned(),
+            );
+        };
+        let Some(chain) = self.chains.iter().find(|c| c.session_id == session_id) else {
+            return Err(format!("the bundle carries no session {session_id}"));
+        };
+        let Some(entry) = chain.entries.iter().find(|e| e.fields.sequence == sequence) else {
+            return Err(format!("session {session_id} has no entry at sequence {sequence}"));
+        };
+        let Some(bytes) = store.get(&entry.fields.artifact_hash) else {
+            return Err(format!(
+                "the retention record at {session_id} seq {sequence} has no carried body"
+            ));
+        };
+        // Chain binding, recomputed here rather than taken from the
+        // artifact_binding grade: this citation must not lean on another
+        // property's verdict.
+        let recomputed = crate::hash::sha256_hex(bytes);
+        if recomputed != entry.fields.artifact_hash {
+            return Err(format!(
+                "the retention record at {session_id} seq {sequence} does not hash to its \
+                 artifact_hash"
+            ));
+        }
+        let Ok(body) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return Err(format!(
+                "the retention record at {session_id} seq {sequence} is not JSON"
+            ));
+        };
+        let schema = body.get("schema").and_then(serde_json::Value::as_str).unwrap_or("");
+        if !schema.starts_with("camera_retention/") {
+            return Err(format!(
+                "{session_id} seq {sequence} declares schema {schema:?}, not a retention record"
+            ));
+        }
+        if self.producer_keys.is_empty() {
+            return Err(
+                "no producer key was supplied (--producer-key), so the retention record's own \
+                 signature could not be checked"
+                    .to_owned(),
+            );
+        }
+        let kid = body
+            .get("producer_key_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let sig_hex = body
+            .get("producer_sig")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let Some(key) = self.producer_keys.iter().find(|k| k.key_id() == kid) else {
+            return Err(format!(
+                "the retention record names producer_key_id {kid}, which is not among the \
+                 supplied producer key(s)"
+            ));
+        };
+        let Ok(sig) = crate::sig::signature_from_hex(sig_hex) else {
+            return Err("the retention record's producer_sig is not an Ed25519 signature".to_owned());
+        };
+        let Some(obj) = body.as_object() else {
+            return Err("the retention record is not a JSON object".to_owned());
+        };
+        let mut stripped = obj.clone();
+        stripped.remove("producer_sig");
+        let payload = crate::producer::canonical_json_bytes(&serde_json::Value::Object(stripped));
+        if key.verify_raw(&payload, &sig).is_err() {
+            return Err(format!(
+                "the retention record's producer_sig does not verify under supplied key {kid}"
+            ));
+        }
+        // Only now does what it SAYS matter. A record that verifies but does
+        // not name this digest declares someone else's deletion.
+        let names_it = body
+            .get("removed")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|i| i.get("sha256").and_then(serde_json::Value::as_str) == Some(digest))
+            });
+        if !names_it {
+            return Err(format!(
+                "the retention record at {session_id} seq {sequence} verifies but does not list \
+                 {digest} in removed[]"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -684,15 +924,18 @@ pub fn grade_referenced_artifact_binding(
     chain: &SessionChain,
     store: Option<&ArtifactStore>,
     referenced: Option<&ReferencedStore>,
+    retention: Option<&RetentionEvidence<'_>>,
 ) -> (Status, ReferencedCoverage) {
     let mut cov = ReferencedCoverage {
         citations: 0,
         verified: 0,
         absent: 0,
+        absent_declared: 0,
         inaccessible: 0,
         failed: 0,
         failures: Vec::new(),
         absences: Vec::new(),
+        declaration_failures: Vec::new(),
     };
     let mut blocked: Option<String> = None;
     let (Some(store), Some(referenced)) = (store, referenced) else {
@@ -739,6 +982,56 @@ pub fn grade_referenced_artifact_binding(
                         )
                     });
                     cov.absences.push(defect(None));
+                }
+                // Declared deleted. The claim is re-checked here before it
+                // is allowed to say anything; it never becomes a pass, only
+                // an ABSENT this bundle can account for.
+                Some(ReferencedEntry::NotCarried(NotCarried::AbsentByDeclaredPolicy {
+                    retention_sequence,
+                    retention_session,
+                })) => {
+                    cov.absent += 1;
+                    cov.absences.push(defect(None));
+                    let outcome = retention
+                        .ok_or_else(|| {
+                            "this verifier was given no session set to resolve the retention \
+                             record against"
+                                .to_owned()
+                        })
+                        .and_then(|r| r.check(Some(store), retention_session, *retention_sequence, &cited));
+                    match outcome {
+                        Ok(()) => cov.absent_declared += 1,
+                        // The declaration does NOT hold: the citation stays
+                        // plain ABSENT and the reason is carried out, not
+                        // dropped. A broken declaration is worse than none,
+                        // because someone wrote it down.
+                        Err(why) => cov.declaration_failures.push(DeclarationFailure {
+                            sequence: e.fields.sequence,
+                            cited: cited.clone(),
+                            retention_session: Some(retention_session.clone()),
+                            retention_sequence: Some(*retention_sequence),
+                            why,
+                        }),
+                    }
+                }
+                // A declaration that does not name what it points at. ABSENT
+                // like any other uncarried citation, with the defect named:
+                // "someone claimed this and the claim is unusable" must not
+                // read the same as "nothing was claimed".
+                Some(ReferencedEntry::NotCarried(NotCarried::MalformedDeclaration { missing })) => {
+                    cov.absent += 1;
+                    cov.absences.push(defect(None));
+                    cov.declaration_failures.push(DeclarationFailure {
+                        sequence: e.fields.sequence,
+                        cited: cited.clone(),
+                        retention_session: None,
+                        retention_sequence: None,
+                        why: format!(
+                            "the citation claims {REASON_ABSENT_BY_DECLARED_POLICY} but names no \
+                             {missing}; the pair is required, so nothing identifies the record \
+                             that would substantiate it"
+                        ),
+                    });
                 }
                 // Not there, and demonstrably so.
                 Some(ReferencedEntry::NotCarried(_)) | None => {

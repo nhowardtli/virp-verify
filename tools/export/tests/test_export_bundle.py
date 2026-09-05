@@ -32,7 +32,10 @@ REAL_SEAL_SHA256 = "58309407ed41349611205d2ad1efd2c1df3b443e7cba6a89ad502699d4e9
 # key's public half (vectors/README.md). NOT the operator's signature.
 TEST_MINISIG = os.path.join(VECTORS, "seal-2026-08.json.test.minisig")
 TEST_MINISIGN_PUB = os.path.join(VECTORS, "minisign-test.pub")
-UPSTREAM_SEAL = os.path.expanduser("<upstream-seal>/seal-2026-08.json")
+# Optional drift check against an upstream copy of the seal, for whoever has
+# one. Set VIRP_UPSTREAM_SEAL to its path; unset, the check is skipped. The
+# vector copy's own hash is asserted unconditionally either way.
+UPSTREAM_SEAL = os.environ.get("VIRP_UPSTREAM_SEAL")
 
 sys.path.insert(0, os.path.join(REPO, "tools", "export"))
 import export_bundle  # noqa: E402
@@ -430,8 +433,9 @@ class ExportAndVerify(unittest.TestCase):
 
     def test_real_seal_is_copied_verbatim_and_its_consistency_verifies(self):
         self.assertEqual(sha256_file(REAL_SEAL), REAL_SEAL_SHA256)
-        if os.path.exists(UPSTREAM_SEAL):
-            self.assertEqual(sha256_file(UPSTREAM_SEAL), REAL_SEAL_SHA256, "repo copy of the seal drifted from the upstream VIRP tree")
+        if UPSTREAM_SEAL and os.path.exists(UPSTREAM_SEAL):
+            self.assertEqual(sha256_file(UPSTREAM_SEAL), REAL_SEAL_SHA256,
+                             "the vector copy of the seal drifted from VIRP_UPSTREAM_SEAL")
         out = self.out("sealed-real")
         r = run_export("--db", self.db, "--out", out, "--sessions", AUTOPILOT_SESSION, "--seal", REAL_SEAL)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1372,16 +1376,33 @@ class RedactedExport(unittest.TestCase):
 # --- the reference-bundle gate ---------------------------------------------
 
 
-# The two reference bundles this session was gated against, with the snapshot
-# each was exported from. They live outside the repo (they are evidence, not
-# fixtures), so these tests SKIP when the laptop does not have them rather
-# than failing on a machine that never had them.
-REFERENCE_GATES = [
-    ("313-human", os.path.expanduser("<reference-bundles>/case-a/bundle"),
-     os.path.expanduser("<reference-bundles>/case-a/snapshot.db")),
-    ("fortigate-authority", os.path.expanduser("<reference-bundles>/case-b/bundle"),
-     os.path.expanduser("<reference-bundles>/case-b/snapshot.db")),
-]
+# The gate against real bundles, which are evidence and not fixtures: they are
+# nobody's to publish, so none is named here and none ships with this tree.
+#
+# Point VIRP_REFERENCE_BUNDLES at a directory holding one subdirectory per
+# case, each containing the exported bundle in `bundle/` and the snapshot it
+# was exported from as `snapshot.db`:
+#
+#     <dir>/<case>/bundle/manifest.json
+#     <dir>/<case>/snapshot.db
+#
+# Unset, or empty, and these tests skip. They cannot be made to fail on a
+# machine that never had the evidence, which is every machine but the
+# operator's.
+def _reference_gates():
+    root = os.environ.get("VIRP_REFERENCE_BUNDLES")
+    if not root or not os.path.isdir(root):
+        return []
+    gates = []
+    for case in sorted(os.listdir(root)):
+        ref = os.path.join(root, case, "bundle")
+        db = os.path.join(root, case, "snapshot.db")
+        if os.path.isdir(ref) and os.path.exists(db):
+            gates.append((case, ref, db))
+    return gates
+
+
+REFERENCE_GATES = _reference_gates()
 
 
 class ReferenceBundleGate(unittest.TestCase):
@@ -1465,7 +1486,7 @@ class ReferenceBundleGate(unittest.TestCase):
                     )
                     self.assertNotIn("INCONSISTENT", text_r)
         if ran == 0:
-            self.skipTest("no reference bundle + source snapshot pair present on this machine")
+            self.skipTest("no reference bundles; set VIRP_REFERENCE_BUNDLES to run this gate")
 
 
 # --- referenced artifacts (--referenced-artifacts) --------------------------

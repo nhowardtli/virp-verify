@@ -1,11 +1,11 @@
 """
 The Python half of the shared corpus contract.
 
-`crates/docket-redact/tests/corpus/cases.json` holds one `expected` output per
-fixture. This suite asserts the Python matcher produces it;
-`crates/docket-redact/tests/fixtures.rs` asserts the Rust matcher produces the
-same one. Neither matcher can drift from the other without failing its own
-suite — there is one `expected`, and both have to land on it.
+`tests/corpus/cases.json` holds one `expected` output per fixture. This suite
+asserts the Python matcher produces it; `tests/fixtures.rs` in Docket's private
+`docket-redact` asserts the Rust matcher produces the same one. Neither matcher
+can drift from the other without failing its own suite — there is one
+`expected`, and both have to land on it.
 """
 
 import base64
@@ -19,9 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import docket_mask  # noqa: E402
 
-REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
-CORPUS = os.path.join(REPO, "crates", "docket-redact", "tests", "corpus", "cases.json")
-TABLE = os.path.join(REPO, "crates", "docket-redact", "patterns", "docket-mask-v1.json")
+HERE = os.path.dirname(os.path.abspath(__file__))
+EXPORT = os.path.dirname(HERE)
+CORPUS = os.path.join(HERE, "corpus", "cases.json")
+TABLE = os.path.join(EXPORT, "docket-mask-v1.json")
 
 
 def load_cases():
@@ -138,7 +139,7 @@ def test_a_missing_pattern_table_is_an_error_and_never_an_empty_ruleset():
     that refuses to start."""
     saved = os.environ.get("DOCKET_MASK_PATTERNS")
     docket_mask._POLICY = None
-    os.environ["DOCKET_MASK_PATTERNS"] = os.path.join(REPO, "no", "such", "table.json")
+    os.environ["DOCKET_MASK_PATTERNS"] = os.path.join(HERE, "no", "such", "table.json")
     try:
         with pytest.raises(Exception):
             docket_mask.policy()

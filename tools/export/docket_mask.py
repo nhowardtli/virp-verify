@@ -7,13 +7,17 @@ with secret-shaped spans replaced by a visible marker.
 
 THE ONE PATTERN TABLE
 ---------------------
-Every pattern lives in `crates/docket-redact/patterns/docket-mask-v1.json`.
-This module carries no pattern of its own; neither does the Rust matcher in
-`crates/docket-redact`, which embeds that same file at compile time. The
-shared fixture corpus (`crates/docket-redact/tests/corpus/cases.json`) gives
+Every pattern lives in `docket-mask-v1.json`, beside this module. This module
+carries no pattern of its own, and neither does the Rust matcher in Docket's
+private `docket-redact`, which embeds a byte-identical copy of that same file
+at compile time. The shared fixture corpus (`tests/corpus/cases.json`) gives
 one `expected` output per fixture, and BOTH matchers are asserted against it
 — here in `tests/test_docket_mask.py` and there in `tests/fixtures.rs`. Two
 matchers cannot disagree on a fixture without one of the two suites failing.
+
+This tree is the source for both. The table and the corpus are published here
+so that a reader who is handed a `--redacted` bundle can check the policy it
+was produced under, rather than being told what it was.
 
 REGEX DIALECT
 -------------
@@ -83,10 +87,10 @@ def _table_path():
         return env
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        # Beside this module: how the exporter travels to another host.
+        # Beside this module: both where it lives in this tree, and how the
+        # exporter travels to another host. There is no second location, so
+        # there is no way to load a table other than the one shipped here.
         os.path.join(here, PATTERN_FILE_NAME),
-        # In the repo: the canonical copy the Rust matcher embeds.
-        os.path.join(here, "..", "..", "crates", "docket-redact", "patterns", PATTERN_FILE_NAME),
     ]
     for c in candidates:
         if os.path.isfile(c):

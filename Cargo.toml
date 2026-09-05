@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/docket-bundle", "crates/docket-redact", "crates/virp-verify", "crates/docket"]
+members = ["crates/docket-bundle", "crates/virp-verify"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "LicenseRef-Proprietary"
+license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
@@ -19,12 +19,6 @@ blake2 = "0.10"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# docket view only (the local bundle viewer). Chosen over axum/tokio for its
-# 5-crate tree; see SESSION-SUMMARY-GUI.md for the comparison and approval.
-tiny_http = "0.12"
-# docket view --db only (live-chain query, read-only open). `bundled` compiles
-# SQLite from source: no system libsqlite3 needed on the host it runs on.
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

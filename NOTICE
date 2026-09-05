@@ -1,0 +1,42 @@
+virp-verify
+Copyright 2025-2026 Third Level IT LLC
+
+This product includes software developed by Third Level IT LLC.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. You may obtain a copy
+of the License in the LICENSE file at the root of this repository, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+WHAT THIS REPOSITORY IS
+
+The source for `virp-verify`, the standalone verifier for VIRP evidence
+bundles, and for `docket-bundle`, the library it reads them with. These two
+crates are published so that anyone handed a `virp-verify` binary can build
+their own from source and compare hashes, rather than taking a stranger's
+executable on trust. That is the entire reason this tree is public.
+
+It is the release source: the binaries published as `virp-verify` releases are
+built from this repository, at the tag named in the release.
+
+WHAT THIS REPOSITORY IS NOT
+
+It is not the whole of Docket. The bundle exporter, the report engine, the
+redaction layer and the operational tooling live in a separate, private
+repository. Nothing in this tree signs anything, holds a private key, or
+executes anything from a bundle; the verifier is a pure reader by design, and
+that is why it is the part that can be public.
+
+`docket-bundle` keeps its name because "Docket" names the evidence-bundle
+FORMAT this code parses, not a brand applied to it: `docket-bundle/0.1` and
+`docket-report/0.8` are version strings inside every manifest and every report
+this verifier reads and writes.
+
+THIRD-PARTY DEPENDENCIES
+
+Every crate this tree links is listed in `Cargo.lock` and constrained by
+`deny.toml`, which permits only MIT / Apache-2.0 / BSD / Unicode / Zlib
+licensed dependencies. Their notices remain with them.

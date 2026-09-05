@@ -1121,6 +1121,58 @@ pub fn cited_digests(body: &Value) -> Vec<(String, String)> {
     out
 }
 
+/// One `camera_retention/*` record carried in a session, summarised for the
+/// report.
+///
+/// These are NOT segments and never reach the coverage grader — a deletion
+/// declaration is not capture, and counting it as one would let an operator
+/// paper over an outage by deleting into it. They are listed beside the
+/// session so a reader can see what was declared without that ever touching
+/// the completeness verdict.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RetentionDeclaration {
+    pub sequence: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_days: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_count: Option<i64>,
+}
+
+/// Every `camera_retention/*` record among a session's carried bodies, in
+/// chain order. Claims read from the record, reported as the record's own
+/// words — grading them is `producer_signature`'s job, not this listing's.
+pub fn retention_declarations(chain: &SessionChain, store: Option<&ArtifactStore>) -> Vec<RetentionDeclaration> {
+    let Some(store) = store else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in &chain.entries {
+        let Some(bytes) = store.get(&e.fields.artifact_hash) else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
+            continue;
+        };
+        let is_retention = body
+            .get("schema")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.starts_with("camera_retention/"));
+        if !is_retention {
+            continue;
+        }
+        out.push(RetentionDeclaration {
+            sequence: e.fields.sequence,
+            camera_id: body.get("camera_id").and_then(Value::as_str).map(str::to_owned),
+            tier: body.get("tier").and_then(Value::as_str).map(str::to_owned),
+            policy_days: body.get("policy_days").and_then(Value::as_i64),
+            removed_count: body.get("removed_count").and_then(Value::as_i64),
+        });
+    }
+    out
+}
+
 pub fn claimed_camera_ids(chain: &SessionChain, store: Option<&ArtifactStore>) -> Vec<String> {
     let Some(store) = store else { return Vec::new() };
     let mut ids: Vec<String> = Vec::new();

@@ -1797,3 +1797,116 @@ class ReferencedArtifacts(unittest.TestCase):
         body["sensor_signature"]["validator_output_sha256"] = "NOT-A-DIGEST"
         body["sensor_signature"]["device_chain"]["leaf_sha256"] = "../../../leaf"
         self.assertEqual(export_bundle.cited_digests(body), {})
+
+
+def retention_body(camera_id, removed, policy_days=30, tier="capture-host"):
+    """A camera_retention/1 body (camera/RETENTION.md §2), canonical
+    single-line JSON the way the driver serializes it. `producer_sig` here is
+    a placeholder: the EXPORTER holds no producer key and verifies nothing —
+    it records WHERE the claim is so virp-verify can go and check it. The
+    signature-checking half is proven in Rust against a real signed record
+    (crates/docket-bundle/tests/retention_grading.rs)."""
+    body = {
+        "camera_id": camera_id,
+        "deleted_at_utc_ns": 1_788_608_294_616_016_350,
+        "policy_days": policy_days,
+        "producer_key_id": "0" * 32,
+        "producer_sig": "0" * 128,
+        "removed": [{"byte_len": len(b), "kind": "segment", "sha256": sha256_hex(b)} for b in removed],
+        "removed_bytes": sum(len(b) for b in removed),
+        "removed_count": len(removed),
+        "schema": "camera_retention/1",
+        "tier": tier,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+class AbsentByDeclaredPolicy(unittest.TestCase):
+    """A cited digest the exporter cannot find, which a camera_retention/1
+    record travelling in the same export names in removed[], is listed with
+    reason absent_by_declared_policy plus a POINTER to that record.
+
+    The exporter never grades the claim — it has no producer key and judges
+    nothing. It says where the declaration is; virp-verify re-checks it and
+    grades the citation ABSENT either way (camera/RETENTION.md §5)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="docket-export-declared-")
+        self.db = os.path.join(self.tmp, "snapshot.db")
+        self.outbox = os.path.join(self.tmp, "outbox")
+        os.makedirs(self.outbox)
+        self.videos = [b"video-%d" % i + b"\x00" * 32 for i in range(3)]
+        self.validations = [b"VIDEO IS VALID!\nsegment %d\n" % i for i in range(3)]
+        self.leaf = b"\x30\x82DER-leaf-certificate-bytes"
+        bodies, prev = [], None
+        for i, (v, val) in enumerate(zip(self.videos, self.validations)):
+            bodies.append(camera_body(i, v, val, prev, leaf=self.leaf))
+            prev = sha256_hex(v)
+        # The declaration: video 1's segment was deleted under the policy.
+        bodies.append(retention_body(REF_CAMERA, [self.videos[1]]))
+        self.retention_sequence = len(bodies) - 1
+        build_referenced_db(self.db, bodies)
+        # Everything on disk EXCEPT the segment the record declares removed,
+        # which is the real shape: retention deleted it.
+        for i, (v, val) in enumerate(zip(self.videos, self.validations)):
+            if i != 1:
+                self._write("%s.%06d.%s.mp4" % (REF_CAMERA, i, sha256_hex(v)), v)
+            self._write("%s.%06d.%s.validation.txt" % (REF_CAMERA, i, sha256_hex(v)), val)
+            self._write("%s.%06d.%s.leaf.der" % (REF_CAMERA, i, sha256_hex(v)), self.leaf)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, data):
+        with open(os.path.join(self.outbox, name), "wb") as f:
+            f.write(data)
+
+    def export(self, name):
+        out = os.path.join(self.tmp, name)
+        r = run_export("--db", self.db, "--out", out, "--sessions", REF_SESSION,
+                       "--artifacts", "--referenced-artifacts", self.outbox)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(out, "manifest.json")) as f:
+            return out, r.stdout, json.load(f)
+
+    def row_for(self, manifest, digest):
+        return next(r for r in manifest["referenced_artifacts"] if r["sha256"] == digest)
+
+    def test_a_declared_deletion_is_labelled_and_points_at_the_record(self):
+        _, stdout, manifest = self.export("declared")
+        row = self.row_for(manifest, sha256_hex(self.videos[1]))
+        self.assertFalse(row["present"])
+        self.assertEqual(row["reason"], "absent_by_declared_policy")
+        self.assertEqual(row["retention_sequence"], self.retention_sequence)
+        self.assertEqual(row["retention_session"], REF_SESSION)
+        self.assertIn("declared deleted by a carried retention record", stdout)
+        self.assertIn("POINTERS to a retention record, not proof", stdout)
+
+    def test_an_undeclared_absence_keeps_the_weaker_word(self):
+        """The distinction is only worth having if an ordinary absence
+        stays not_found. Remove a validation output nothing declares."""
+        os.remove(os.path.join(
+            self.outbox, "%s.%06d.%s.validation.txt" % (REF_CAMERA, 2, sha256_hex(self.videos[2]))))
+        _, _, manifest = self.export("mixed")
+        declared = self.row_for(manifest, sha256_hex(self.videos[1]))
+        plain = self.row_for(manifest, sha256_hex(self.validations[2]))
+        self.assertEqual(declared["reason"], "absent_by_declared_policy")
+        self.assertEqual(plain["reason"], "not_found")
+        self.assertNotIn("retention_sequence", plain)
+
+    def test_a_carried_artifact_is_never_labelled_declared(self):
+        """video 0 is on disk AND, hypothetically, could be named by a
+        record. Presence wins: a file the exporter found is carried."""
+        _, _, manifest = self.export("carried")
+        row = self.row_for(manifest, sha256_hex(self.videos[0]))
+        self.assertTrue(row["present"])
+        # A carried row carries no reason at all — not even a null one.
+        self.assertIsNone(row.get("reason"))
+        self.assertNotIn("retention_sequence", row)
+
+    def test_the_pointer_never_appears_without_the_reason(self):
+        _, _, manifest = self.export("pointer")
+        for row in manifest["referenced_artifacts"]:
+            if "retention_sequence" in row:
+                self.assertEqual(row["reason"], "absent_by_declared_policy", row)
+                self.assertIn("retention_session", row)

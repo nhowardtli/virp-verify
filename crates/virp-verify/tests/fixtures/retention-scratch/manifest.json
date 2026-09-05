@@ -1,0 +1,19 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=snap.db)",
+  "created_at": "2026-09-05T12:06:19Z",
+  "sessions": [
+    {
+      "session_id": "camera-retention:retention-test-0905:2026-09-05",
+      "path": "sessions/camera-retention_retention-test-0905_2026-09-05.json"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "09abbc2f4edce7d31061ccccf57d32ebacaf25f4394bccfc6eecd46f7ea0f158",
+      "path": "artifacts/09abbc2f4edce7d31061ccccf57d32ebacaf25f4394bccfc6eecd46f7ea0f158"
+    }
+  ],
+  "referenced_artifacts": []
+}

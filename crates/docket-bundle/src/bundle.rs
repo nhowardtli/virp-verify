@@ -154,6 +154,15 @@ pub struct ManifestReferencedArtifact {
     /// exporter recorded it, which read as not_found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// With `reason: "absent_by_declared_policy"`: which retention record
+    /// declares this digest deleted, and in which session. Unsigned
+    /// exporter metadata — a POINTER, never the proof. The verifier
+    /// re-reads the named record from the carried bodies and re-checks it;
+    /// a manifest that points at nothing simply fails to honour the claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_sequence: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_session: Option<String>,
 }
 
 /// Which record cites a referenced artifact, and through which field.
@@ -1191,7 +1200,11 @@ impl Bundle {
                     };
                     let entry = match carried {
                         Some(c) => ReferencedEntry::Carried(c),
-                        None => ReferencedEntry::NotCarried(NotCarried::from_reason(mr.reason.as_deref())),
+                        None => ReferencedEntry::NotCarried(NotCarried::from_manifest(
+                            mr.reason.as_deref(),
+                            mr.retention_sequence,
+                            mr.retention_session.as_deref(),
+                        )),
                     };
                     if store.insert(mr.sha256.clone(), entry).is_some() {
                         return Err(BundleError::DuplicateReferencedArtifact(mr.sha256.clone()));
@@ -1344,8 +1357,20 @@ impl Bundle {
                 // these has no section, and must serialize unchanged.
                 None => (None, None),
                 Some(_) => {
-                    let (status, coverage) =
-                        grade_referenced_artifact_binding(chain, self.artifacts.as_ref(), self.referenced.as_ref());
+                    // The retention record a citation names lives in its own
+                    // session, so the grader gets the whole session set and
+                    // the examiner's producer keys — an unverified
+                    // declaration is not a declaration.
+                    let retention = crate::verify::RetentionEvidence {
+                        chains: &self.sessions,
+                        producer_keys,
+                    };
+                    let (status, coverage) = grade_referenced_artifact_binding(
+                        chain,
+                        self.artifacts.as_ref(),
+                        self.referenced.as_ref(),
+                        Some(&retention),
+                    );
                     (Some(status), Some(coverage))
                 }
             };
@@ -1381,6 +1406,7 @@ impl Bundle {
             let capture_completeness = grade_capture_completeness(chain, self.artifacts.as_ref());
             let sensor = summarise_sensor(chain, self.artifacts.as_ref());
             let producer = grade_producer_signatures(chain, self.artifacts.as_ref(), producer_keys);
+            let retention_declarations = crate::camera::retention_declarations(chain, self.artifacts.as_ref());
             sessions.push(SessionOutcome {
                 report,
                 seal_head_match,
@@ -1393,6 +1419,7 @@ impl Bundle {
                 producer,
                 capture_completeness,
                 sensor,
+                retention_declarations,
             });
         }
 
@@ -1597,6 +1624,16 @@ pub struct SessionOutcome {
     /// no sensor-bearing record, so pre-/3 bundles serialize unchanged.
     #[serde(default, skip_serializing_if = "SensorSummary::is_empty")]
     pub sensor: SensorSummary,
+    /// `camera_retention/*` records carried in this session, listed for a
+    /// reader. PRESENTATION ONLY, and deliberately kept out of
+    /// `capture_completeness`: a deletion declaration is not capture, and
+    /// letting one count as coverage would let an operator paper over an
+    /// outage by deleting into it. Their signatures ARE graded — by
+    /// `producer_signature`, along with every other producer-signed body.
+    /// Empty for every session that carries none, so bundles without
+    /// retention records serialize unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retention_declarations: Vec<crate::camera::RetentionDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1833,16 +1870,18 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             .max_by_key(|st| rank(st))
             .cloned()
             .unwrap_or(Status::Absent);
-        let (citations, verified, absent, inaccessible, failed) = sessions
+        let (citations, verified, absent, inaccessible, failed, declared, bad_decls) = sessions
             .iter()
             .filter_map(|s| s.referenced_coverage.as_ref())
-            .fold((0, 0, 0, 0, 0), |a, c| {
+            .fold((0, 0, 0, 0, 0, 0, 0), |a, c| {
                 (
                     a.0 + c.citations,
                     a.1 + c.verified,
                     a.2 + c.absent,
                     a.3 + c.inaccessible,
                     a.4 + c.failed,
+                    a.5 + c.absent_declared,
+                    a.6 + c.declaration_failures.len(),
                 )
             });
         let detail = if citations == 0 {
@@ -1850,7 +1889,25 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         } else {
             let mut d = format!("{verified} of {citations} cited artifact(s) recomputed and matching");
             if absent > 0 {
-                d.push_str(&format!("; {absent} not carried — ABSENT, not a pass"));
+                // Declared and undeclared absences are counted apart. Both
+                // are ABSENT and neither is a pass — the split says which
+                // ones the operator accounted for, so an examiner knows
+                // which ones are still theirs to chase.
+                let undeclared = absent - declared;
+                if declared > 0 {
+                    d.push_str(&format!(
+                        "; {absent} not carried — ABSENT, not a pass ({declared} declared by a \
+                         verified retention record, {undeclared} undeclared)"
+                    ));
+                } else {
+                    d.push_str(&format!("; {absent} not carried — ABSENT, not a pass"));
+                }
+            }
+            if bad_decls > 0 {
+                d.push_str(&format!(
+                    "; {bad_decls} claimed retention declaration(s) did NOT verify and were not \
+                     honoured"
+                ));
             }
             if inaccessible > 0 {
                 d.push_str(&format!(
@@ -2245,6 +2302,7 @@ mod tests {
                 external_predecessor_gaps: Vec::new(),
             },
             sensor: SensorSummary::default(),
+            retention_declarations: Vec::new(),
         }
     }
 

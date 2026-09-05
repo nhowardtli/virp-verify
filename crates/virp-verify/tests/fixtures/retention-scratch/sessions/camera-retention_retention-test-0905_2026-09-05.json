@@ -1,0 +1,37 @@
+{
+  "session_id": "camera-retention:retention-test-0905:2026-09-05",
+  "entries": [
+    {
+      "artifact_hash": "09abbc2f4edce7d31061ccccf57d32ebacaf25f4394bccfc6eecd46f7ea0f158",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "camret:retention-test-0905:capture-host:1788608294616016350:0",
+      "artifact_schema_version": "1",
+      "artifact_type": "evidence_item",
+      "monotonic_ns": 52220632834673,
+      "previous_entry_hash": "38a5e0e073a5dc9b63b6e583787b0121d35f63694d8ef89b6b1832468fc24b44",
+      "sequence": 0,
+      "session_id": "camera-retention:retention-test-0905:2026-09-05",
+      "signer_node_id": 13,
+      "signer_org_id": "local",
+      "timestamp_ns": 1788608323921990750,
+      "chain_entry_hash": "f822f3d53ef13684493f2fb42cdccf31d07fa1c878da14a658b38544316ee630",
+      "chain_hmac": "133643d07db3ad26a0d589cdcf0e0b0671a1b1878717f1613a01ad2cbfb63553",
+      "signature": {
+        "signature_scheme": "ed25519-detached-v1",
+        "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+        "signature_hex": "ffca876c01e304d935325842dab589570059b4efe0a21aa5c7fea13c8415109da98f3df0051b0acd93917f9c40d1d0ecc3287b817ea0cd4e99de552e00047c01"
+      }
+    }
+  ],
+  "head": {
+    "session_id": "camera-retention:retention-test-0905:2026-09-05",
+    "last_sequence": 0,
+    "last_entry_hash": "f822f3d53ef13684493f2fb42cdccf31d07fa1c878da14a658b38544316ee630",
+    "head_hmac": "070ac1664435cf367cecb4b1f8e0117dc5a1fdffb0366b690fe3169d76d91a1d",
+    "signature": {
+      "signature_scheme": "ed25519-detached-v1",
+      "signing_key_id": "c1104805e1044d63a0c531eb7a025e68",
+      "signature_hex": "b0ab2c52fc5dbf9f1d260239c0e25c1272651d0d1070fdc47129439d9fb7e7779525e2bb590084ffa9a0950befce40ec7a00a9856be75f0a4ecb2e6cb2e09a06"
+    }
+  }
+}

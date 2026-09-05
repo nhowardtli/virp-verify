@@ -633,6 +633,13 @@ def referenced_patterns(field, seg_sha, digest):
 
 #: the artifact is not under any search directory
 REASON_NOT_FOUND = "not_found"
+# A digest the exporter found no bytes for, which a carried camera_retention/*
+# record in this same export names in removed[] — the operator declared the
+# deletion (camera/RETENTION.md §5). The manifest carries a POINTER to that
+# record, never a proof: virp-verify re-reads it and re-checks it before the
+# claim counts for anything, and a citation it cannot confirm stays plainly
+# absent. Emitted only alongside a resolvable (session, sequence) pair.
+REASON_ABSENT_BY_DECLARED_POLICY = "absent_by_declared_policy"
 #: a search directory, or the file itself, could not be read
 REASON_EACCES = "eacces"
 
@@ -680,6 +687,7 @@ def collect_referenced(chains, store, dirs):
     `source` is the local path the bytes came from and never reaches the
     manifest: where a file sat on the exporting machine is not a fact about
     the evidence, and the bundle already names the artifact by its digest."""
+    declared = retention_declared_digests(chains, store)
     found = {}
     for chain in chains:
         for entry in chain["entries"]:
@@ -718,9 +726,57 @@ def collect_referenced(chains, store, dirs):
                         # never downgraded back to not_found by a later
                         # citation that happened to look somewhere readable
                         rec["reason"] = REASON_EACCES
+                    elif digest in declared:
+                        # Looked for, not there, AND declared deleted by a
+                        # retention record travelling in this same bundle.
+                        # Only ever applied over not_found: an eacces look
+                        # never happened, so nothing about it is explained
+                        # by a declaration.
+                        sess, seqno = declared[digest]
+                        rec["reason"] = REASON_ABSENT_BY_DECLARED_POLICY
+                        rec["retention_session"] = sess
+                        rec["retention_sequence"] = seqno
     for rec in found.values():
         rec["cited_by"].sort(key=lambda c: (c["session_id"], c["segment_seq"] or 0, c["field"]))
     return [found[d] for d in sorted(found)]
+
+
+def retention_declared_digests(chains, store):
+    """{digest: (session_id, sequence)} for every digest named in the
+    `removed[]` of a carried `camera_retention/*` record.
+
+    Read from the CARRIED bodies only — a declaration that does not travel
+    in the bundle cannot explain anything to a verifier reading that bundle.
+    Nothing here is verified: the exporter holds no producer key and judges
+    nothing. It records where the claim is so the verifier can go and check
+    it. First writer wins on a duplicate digest, so the mapping is
+    deterministic for a given export.
+    """
+    out = {}
+    for chain in chains:
+        for entry in chain["entries"]:
+            data = store.get(entry["artifact_hash"])
+            if data is None:
+                continue
+            try:
+                body = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(body, dict):
+                continue
+            schema = body.get("schema")
+            if not isinstance(schema, str) or not schema.startswith("camera_retention/"):
+                continue
+            removed = body.get("removed")
+            if not isinstance(removed, list):
+                continue
+            for item in removed:
+                if not isinstance(item, dict):
+                    continue
+                digest = item.get("sha256")
+                if isinstance(digest, str) and digest not in out:
+                    out[digest] = (chain["session_id"], entry["sequence"])
+    return out
 
 
 def read_referenced_bytes(rec):
@@ -1463,6 +1519,12 @@ def run_export(
                 # looked for and is not there; eacces says the look
                 # itself did not happen and the absence proves nothing.
                 entry["reason"] = rec["reason"]
+                # The pointer that qualifies absent_by_declared_policy.
+                # Sequences are per session, so the session id travels with
+                # it or the sequence names nothing.
+                if rec.get("retention_session") is not None:
+                    entry["retention_session"] = rec["retention_session"]
+                    entry["retention_sequence"] = rec["retention_sequence"]
             if rec["present"]:
                 # Named by the CITED digest, not by the bytes' own hash: the
                 # verifier looks the citation up and recomputes, so altered
@@ -1556,11 +1618,18 @@ def run_export(
     if referenced_dirs:
         present = sum(1 for r in referenced if r["present"])
         blocked = sum(1 for r in referenced if r["reason"] == REASON_EACCES)
-        missing = len(referenced) - present - blocked
+        declared = sum(1 for r in referenced if r["reason"] == REASON_ABSENT_BY_DECLARED_POLICY)
+        missing = len(referenced) - present - blocked - declared
         print(
             f"  referenced artifacts: {len(referenced)} cited by the carried camera records; "
-            f"{present} carried, {missing} not found, {blocked} INACCESSIBLE (listed present=false)"
+            f"{present} carried, {missing} not found, {declared} declared deleted by a carried "
+            f"retention record, {blocked} INACCESSIBLE (listed present=false)"
         )
+        if declared:
+            print(
+                "  declared-deleted citations are POINTERS to a retention record, not proof: "
+                "virp-verify re-checks that record and grades the citation ABSENT either way"
+            )
         if blocked:
             print(
                 "  INACCESSIBLE means a search directory or file could not be read, so those "

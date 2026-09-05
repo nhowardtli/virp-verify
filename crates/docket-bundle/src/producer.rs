@@ -1,8 +1,13 @@
 //! Producer-signature verification — the CAPTURE HOST's trust boundary.
 //!
-//! A `camera_segment/*` body carries `producer_sig`: raw Ed25519 (no domain
-//! tag) by the capture host's own producer key over the canonical body minus
-//! `producer_sig`. That is a DIFFERENT trust boundary from the O-Node chain
+//! A `camera_segment/*` or `camera_retention/*` body carries `producer_sig`:
+//! raw Ed25519 (no domain tag) by the capture host's own producer key over
+//! the canonical body minus `producer_sig`. Both schemas sign the same way,
+//! under the same key, so they are graded by one code path and one
+//! vocabulary; a retention record is not a weaker record, it is a different
+//! statement signed by the same hand.
+//!
+//! That is a DIFFERENT trust boundary from the O-Node chain
 //! signature: the chain key proves the O-Node committed to these bytes; the
 //! producer key proves the capture host built and signed them. Neither key
 //! may ever stand in for the other — that substitution is exactly what the
@@ -32,6 +37,18 @@ use serde_json::Value;
 
 use crate::sig::PublicKey;
 use crate::verify::{ArtifactStore, SessionChain, SignerTrust, Status, TrustSource};
+
+/// Schemas whose bodies this verifier knows how to producer-check.
+///
+/// `camera_segment/*` is the capture record; `camera_retention/*` is the
+/// declare-then-delete record (camera/RETENTION.md §2), which carries the
+/// same `producer_key_id` / `producer_sig` pair over the same canonical
+/// body-minus-sig. Anything else is NOT examined here and must never be
+/// graded as though it had been — see the ABSENT branch in
+/// [`grade_producer_signatures`].
+pub fn is_producer_signed_schema(schema: &str) -> bool {
+    schema.starts_with("camera_segment/") || schema.starts_with("camera_retention/")
+}
 
 /// Python-compatible canonical JSON bytes: sorted keys, compact separators,
 /// ASCII-only. The producer hashes, signs, submits and stores exactly these
@@ -203,17 +220,31 @@ pub fn grade_producer_signatures(
     // session's producer coverage unreadable rather than silently smaller.
     let mut hash_only = 0usize;
     let mut cam_bodies: Vec<(i64, Value)> = Vec::new();
+    // Schemas that were carried, parsed, and are not ones this verifier
+    // examines. Tracked so the ABSENT branch can say WHICH schema went
+    // unexamined instead of implying the bundle held nothing — "I did not
+    // look at this" and "there was nothing to look at" are different facts.
+    let mut unexamined: Vec<String> = Vec::new();
     for e in &chain.entries {
         match store.get(&e.fields.artifact_hash) {
             None => hash_only += 1,
             Some(bytes) => {
                 if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
-                    let is_cam = v
-                        .get("schema")
-                        .and_then(Value::as_str)
-                        .is_some_and(|s| s.starts_with("camera_segment/"));
-                    if is_cam {
-                        cam_bodies.push((e.fields.sequence, v));
+                    match v.get("schema").and_then(Value::as_str) {
+                        Some(s) if is_producer_signed_schema(s) => {
+                            cam_bodies.push((e.fields.sequence, v));
+                        }
+                        Some(s) => {
+                            if !unexamined.iter().any(|u| u == s) {
+                                unexamined.push(s.to_owned());
+                            }
+                        }
+                        None => {
+                            let none = "(body declares no schema)";
+                            if !unexamined.iter().any(|u| u == none) {
+                                unexamined.push(none.to_owned());
+                            }
+                        }
                     }
                 }
             }
@@ -233,12 +264,29 @@ pub fn grade_producer_signatures(
                 Vec::new(),
             );
         }
+        // A schema this verifier does not examine is ABSENT with that said
+        // plainly, and is NEVER a pass: silence about an unexamined body
+        // would read as "checked and fine" to anyone scanning the grade.
+        if !unexamined.is_empty() {
+            return ProducerSignerReport {
+                signature_validity: Status::Absent,
+                trust: SignerTrust::Unestablished,
+                trust_source: None,
+                detail: format!(
+                    "schema not examined by this verifier: the carried bodies declare {} and \
+                     no producer-signed record (camera_segment/*, camera_retention/*) is \
+                     among them; nothing here was checked, and nothing here passed",
+                    unexamined.join(", ")
+                ),
+                claimed_key_ids: Vec::new(),
+            };
+        }
         return ProducerSignerReport {
             signature_validity: Status::Absent,
             trust: SignerTrust::Unestablished,
             trust_source: None,
-            detail: "no camera_segment records among the carried bodies; there is no producer \
-                     signature to check"
+            detail: "no producer-signed record (camera_segment/*, camera_retention/*) among \
+                     the carried bodies; there is no producer signature to check"
                 .to_owned(),
             claimed_key_ids: Vec::new(),
         };
@@ -275,8 +323,8 @@ pub fn grade_producer_signatures(
                 "producer_key_id"
             };
             Some((
-                format!("camera record at chain sequence {seq} carries no {missing}"),
-                "a camera record does not carry the producer signature fields its schema requires",
+                format!("producer-signed record at chain sequence {seq} carries no {missing}"),
+                "a producer-signed record does not carry the signature fields its schema requires",
             ))
         } else if !kid.is_some_and(crate::hash::is_hex_key_id_32) {
             Some((
@@ -284,8 +332,8 @@ pub fn grade_producer_signatures(
                     "producer_key_id at chain sequence {seq} is not a key id: expected exactly 32 \
                      lowercase hex characters (sha256-raw-16)"
                 ),
-                "a camera record's producer_key_id is malformed; checked and wrong, with or \
-                 without a supplied key",
+                "a producer-signed record's producer_key_id is malformed; checked and wrong, with \
+                 or without a supplied key",
             ))
         } else if !sig.is_some_and(|s| crate::sig::signature_from_hex(s).is_ok()) {
             Some((
@@ -293,8 +341,8 @@ pub fn grade_producer_signatures(
                     "producer_sig at chain sequence {seq} is not an Ed25519 signature: expected \
                      exactly 128 hex characters decoding to 64 bytes"
                 ),
-                "a camera record's producer_sig is malformed; checked and wrong, with or without \
-                 a supplied key",
+                "a producer-signed record's producer_sig is malformed; checked and wrong, with or \
+                 without a supplied key",
             ))
         } else {
             None

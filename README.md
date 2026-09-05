@@ -188,17 +188,114 @@ ones and re-running the check — exactly what the block above does — is the
 check. The commit stays the canonical, dated source; the assets are a
 convenience that the hashes keep honest.
 
+## Producing a bundle
+
+Everything above is the reading half. This is the writing half:
+`tools/export/export_bundle.py`, which a VIRP operator runs against their own
+chain database to produce the directory the verifier grades.
+
+It is one file, Python 3 standard library only, and it is here for the same
+reason the verifier is. A bundle format whose producing half nobody can read is
+a description of an agreement, not an agreement. If you want to check that a
+bundle you were handed says what it should, or write your own exporter, this is
+the reference.
+
+### Snapshot first — the exporter will not do it for you
+
+The exporter opens the database `mode=ro&immutable=1`, which is what keeps it
+from taking locks or writing sidecars beside your production file. The same flag
+makes SQLite **ignore the write-ahead log**. Point it at a live daemon's
+database and every entry committed but not yet checkpointed is silently missing,
+and the bundle comes out internally consistent, every hash verifying, and short.
+Measured: a 4.2 MB WAL held five freshly appended records, and the bundle had
+fifteen entries instead of twenty.
+
+Nothing downstream can catch that, so the exporter refuses rather than
+undercounting — and it refuses instead of checkpointing, because checkpointing
+writes to the database and *writes go only under `--out`*. You checkpoint a
+copy. This is the recipe it prints at you:
+
+```sh
+cp /var/lib/virp/chain.db /tmp/snap.db && cp /var/lib/virp/chain.db-wal /tmp/snap.db-wal
+python3 -c "import sqlite3;c=sqlite3.connect('/tmp/snap.db');\
+            c.execute('PRAGMA wal_checkpoint(TRUNCATE)');c.commit()"
+```
+
+### The one command
+
+```sh
+python3 tools/export/export_bundle.py \
+    --db   /tmp/snap.db \
+    --out  ./bundle-2026-09-05 \
+    --all-sessions \
+    --artifacts \
+    --keys ./chain-sign-<node>.hex \
+    --witness-receipts /var/lib/virp/witness/heads
+```
+
+`--list-sessions` first if you want to pick sessions by hand rather than
+`--all-sessions`; `--sessions <id> [<id> ...]` takes the ones you choose. Add
+`--seal <seal.json>` if the chain is anchored to one. Then hand the directory to
+`virp-verify`, which is the only thing in this tree that reaches a verdict.
+
+### What each flag carries
+
+| flag | what it puts in the bundle |
+|---|---|
+| `--artifacts` | the artifact **bodies** — the raw observation bytes each `artifact_hash` commits to. Without it the bundle is hash-only: the chain still verifies, but `artifact_binding` cannot be graded and a reader cannot see what happened. |
+| `--referenced-artifacts DIR` | the files a camera record **cites by digest** rather than contains: the segment video (`segment_sha256`), the validator's output about it, and the device leaf certificate. Repeatable. The verifier recomputes SHA-256 over what is carried and grades a citation whose file is absent as ABSENT — never as a pass. |
+| `--witness-receipts DIR` | the `<head>.witness.json` receipts the node-side submitter wrote (default `/var/lib/virp/witness/heads`). Read-only, matched by **leaf identity and never by file name**, so a receipt renamed or dropped in the wrong directory cannot be attached to a head it does not describe. |
+| `--keys PUBFILE ...` | `keys.json`, the chain-signing **public** keys. `key_id` is derived from the key bytes (`sha256-raw-16`) rather than trusted from the file, output is deterministic, and a file carrying a seed or secret half is **refused** rather than copied. |
+
+`--redacted` (which requires `--artifacts`) withholds any body carrying a
+secret in a recognized format, exporting it hash-only. The withheld entries keep
+their `artifact_hash` and their place in the chain, so no verdict moves — that
+property is a test, not a hope. The pattern table is
+`tools/export/docket-mask-v1.json`, published here so the policy a bundle claims
+can be read rather than taken on trust; the manifest's policy name is still only
+a claim, because nothing inside a bundle can prove which patterns ran.
+
+### What the exporter is not
+
+**It holds no keys and it signs nothing.** `--keys` takes public halves only and
+refuses anything with secret material in it. There is no private key anywhere in
+this tree.
+
+**It makes no judgments.** It copies chain rows out of the database as stored —
+hashes, HMACs and signatures byte for byte. It renumbers nothing, fills no gaps,
+lowercases nothing and recomputes nothing. Its only checks are structural: the
+expected tables and columns exist, required cells are present and of the right
+type, hex cells are hex. Everything else — links, genesis, contiguity, head
+commitment, signatures, seal anchoring — is `virp-verify`'s to grade. An
+exporter that "fixed" anything would make the bundle worthless as evidence.
+
+**It opens no socket**, with one exception: `--witness <url>` makes GET requests
+to that URL and nothing else, and sends the witness nothing about the chain — no
+session id, no hash, no head. A witness that is down, slow or hostile can make a
+row say `present=false` with a reason. It cannot stop the export, alter a row,
+or fail the run.
+
 ## The repository
 
     crates/docket-bundle    the library: canonical bytes, hashing, signature
                             verification, bundle reading, witness proofs
     crates/virp-verify      the binary: CLI, report rendering, exit codes
+    tools/export            the exporter: chain database -> bundle, and the
+                            masking module and pattern table it uses
     tools/release           the reproducible build recipe
     docs/VERIFIER-RELEASE.md   the long form on what a hash does and does not tell you
 
-`cargo test --workspace` runs the suite, including the golden vectors under
-`crates/docket-bundle/tests/vectors/`: chain signing, the seal, and the RFC 9162
-witness vector set. The exporter that writes bundles is not here — the verifier
-is a pure reader, which is what makes it publishable.
+`cargo test --workspace` runs the verifier suite, including the golden vectors
+under `crates/docket-bundle/tests/vectors/`: chain signing, the seal, and the
+RFC 9162 witness vector set. `python3 -m pytest tools/export/tests` runs the
+exporter's, which builds a chain database from those same vectors, exports a
+bundle, and runs the real `virp-verify` binary against the result — so the two
+halves are checked against each other and not just against themselves.
+
+Both halves are here because neither is a risk to publish. The verifier is a
+pure reader. The exporter writes only under `--out`, holds no key, signs
+nothing, and grades nothing. What stays in Docket's private tree is the report
+engine, the viewer, the claims layer, and the Rust half of the redaction
+layer — none of which an examiner needs to check a bundle.
 
 Apache License 2.0. See `LICENSE` and `NOTICE`.

@@ -26,20 +26,21 @@ for k in $(grep -oE '[^ ]+\.(hex|keys\.json)$' SHA256SUMS) seal-virp-ad48b20f-20
 done
 sha256sum -c SHA256SUMS
 minisign -Vm SHA256SUMS -p seal-virp-ad48b20f-2026-09-05.pub
-tar -xzf axis-20260904-v6.tar.gz
+tar -xzf bundle-blip-20260907.tar.gz
 chmod +x virp-verify
-show='^virp-verify |^  (witness {16}|referenced_artifact_binding )[A-Z]|^OVERALL VERDICT'
-./virp-verify axis-20260904-v6 | grep -E "$show"
+show='^virp-verify |^  capture_continuity |^OVERALL VERDICT'
+./virp-verify bundle-blip-20260907 | grep -E "$show"
 ./virp-verify \
     --pin          chain-313-c1104805-2026-08-28.hex \
     --producer-key producer-axis-m3085v-fae0d249-2026-09-03.hex \
-    --witness-key  witness-virp-systems-2a771e12-2026-09-03.hex \
-    axis-20260904-v6 | grep -E "$show"
+    --producer-key producer-reolink-rlc810a-4727a5b9-2026-09-07.hex \
+    bundle-blip-20260907 | grep -E "$show"
 ```
 
-`sha256sum -c` prints `OK` seven times and `minisign` prints `Signature and
-comment signature verified`. The two runs print four lines each; the full
-report is what you get without the `grep`.
+`sha256sum -c` prints `OK` once per file it names and `minisign` prints
+`Signature and comment signature verified`. The two runs print three lines
+each; the full report is what you get without the `grep`, and it is long: six
+sessions, 29,256 entries, two cameras.
 
 ---
 
@@ -59,24 +60,39 @@ consistency and nothing else — anyone can generate a keypair, sign fabricated
 evidence, and ship the public half alongside it. In the second run the keys came
 from a commit in this repository, chosen by you, which is what `--pin` means.
 
-The witness line flips the same way and for the same reason: from
-`UNVERIFIABLE` ("no `--witness-key` was supplied, so the signed tree head was
-not checked under any key the examiner selected") to `VERIFIED` (leaf 476 of
-tree 571, under a key you supplied). **UNVERIFIABLE is not a failure and not a
-pass** — it is the verifier declining to grade something it was not given what
-it needs to check. That distinction is the whole point of the tool.
+The line that does not flip is the one this release exists for:
 
-`referenced_artifact_binding` does not flip, because it needs no key: the
-verifier recomputes SHA-256 over the 51 artifacts the signed records cite — the
-segment video, the validator's output about it, the device leaf certificate —
-and compares each against the citing field. Which digests are cited is
-re-derived from the signed bodies, never read from the unsigned manifest.
+    capture_continuity  INTERRUPTED / ACCOUNTED
+      axis-m3085v-b8a44fdd572c: 2026-09-05 -> 2026-09-06 28.38 h accounted (driver-restart)
+      axis-m3085v-b8a44fdd572c: 2026-09-06 -> 2026-09-07 meets with no uncovered time
+      reolink-rlc810a-sub:      2026-09-05 -> 2026-09-06 10.52 h accounted (capture-discontinuity)
+      reolink-rlc810a-sub:      2026-09-06 -> 2026-09-07 meets with no uncovered time
+
+It needs no key, because it is arithmetic over signed records rather than a
+signature check. Each session's own grade is computed from that session alone,
+which is why a hole landing ON a session boundary used to go unstated: one side
+of it is in each session, and per session the resuming record's gap cites a
+predecessor "outside the bundle". Both sides are here, so the duration is
+measured and named. **Accounted for is not complete**: a signed gap record
+says the producer knew the stream stopped, never that it kept recording.
+
+`witness` reads `ABSENT — reason: not_submitted` on all six sessions, and that
+row is currently understating what is known. The bundle was exported on a
+machine that is not the node, where the submitter's receipt directory does not
+exist; four of these six heads are in fact in the witness log, with receipts
+matching on all four identity fields. The exporter reports "no receipt found
+here" as "never submitted", which is a fact about the export host stated as a
+fact about the evidence. Fixing that reason is open work. For a bundle carrying
+real inclusion proofs, verify `axis-20260904-v6.tar.gz`, also attached to this
+release, with `--witness-key`: its witness line flips from `UNVERIFIABLE` to
+`VERIFIED` (leaf 476 of tree 571) and its `referenced_artifact_binding`
+recomputes SHA-256 over the 51 artifacts its signed records cite.
 
 Everything above ran offline. After the downloads, neither run touched the
-network: the witness result comes from an inclusion proof and a signed tree
-head carried inside the bundle and recomputed here, and `--witness-url` — which
-re-checks the carried tree against the log serving it now — is the only flag
-that would go out and ask anyone anything.
+network: every hash, link, signature and witness proof a bundle carries is
+recomputed from the bundle's own bytes, and `--witness-url`, which re-checks a
+carried tree against the log serving it now, is the only flag that would go out
+and ask anyone anything.
 
 ## What CRYPTOGRAPHICALLY-VERIFIED does and does not mean
 
@@ -91,13 +107,15 @@ every report — read them; they are the honest part.
 
 ## The trust boundary
 
-Three keys, three separate boundaries, and none of them ever stands in for
-another:
+Four keys, four separate boundaries, and none of them ever stands in for
+another. A producer signature binds a KEY, not a host, which is why the two
+capture hosts have one key each rather than sharing one:
 
 | key | what it says |
 |---|---|
 | `chain-313-c1104805-2026-08-28.hex` | the O-Node committed to this sequence (`--pin`) |
-| `producer-axis-m3085v-fae0d249-2026-09-03.hex` | the capture host committed to these record bodies (`--producer-key`) |
+| `producer-axis-m3085v-fae0d249-2026-09-03.hex` | the Axis capture host committed to these record bodies (`--producer-key`) |
+| `producer-reolink-rlc810a-4727a5b9-2026-09-07.hex` | the Reolink capture host committed to its own record bodies (`--producer-key`) |
 | `witness-virp-systems-2a771e12-2026-09-03.hex` | an append-only log held this head at a stated time (`--witness-key`) |
 
 A bundle carries key *ids*, never keys. The three above are published so this

@@ -422,7 +422,7 @@ fn the_json_report_carries_the_witness_result() {
         fixture().to_str().unwrap(),
     ]);
     let v: serde_json::Value = serde_json::from_str(&out).expect("report json");
-    assert_eq!(v["docket_report_version"], "docket-report/0.8");
+    assert_eq!(v["docket_report_version"], "docket-report/0.9");
     assert!(!v["witness_key_ids"].as_array().unwrap().is_empty());
     let s = v["sessions"]
         .as_array()

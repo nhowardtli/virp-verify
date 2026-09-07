@@ -42,6 +42,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::verify::{ArtifactStore, SessionChain};
 
@@ -1053,6 +1054,282 @@ pub fn grade_capture_completeness(chain: &SessionChain, store: Option<&ArtifactS
         overlaps,
         external_predecessor_gaps: external_gaps,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-session capture continuity.
+//
+// The per-session grader reads one session at a time, so a hole that lands ON
+// a session boundary is invisible to it: the last record of one session and
+// the first record of the next are never compared. When the bundle carries
+// both sides, that hole is measurable, and a verifier that stays silent about
+// it is reporting the export's session layout rather than the evidence.
+//
+// This is a SECOND question, never a re-grade of the first. The resuming
+// record's own gap remains, per session, a left-boundary gap of unavailable
+// duration; here the predecessor it cites is in hand, so the duration is
+// available and is stated.
+// ---------------------------------------------------------------------------
+
+/// The first and last carried capture record of one camera within one
+/// session: what a neighbouring session has to be compared against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCaptureBounds {
+    pub session_id: String,
+    pub camera_id: String,
+    pub first_seq: i64,
+    pub first_start_ns: i64,
+    /// `after_seq` of the gap record on the FIRST carried record, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_gap_after_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_gap_reason: Option<String>,
+    pub last_seq: i64,
+    pub last_end_ns: i64,
+    /// The first record's own signed policy: the one that grades the hole
+    /// standing before it, exactly as within a session.
+    pub policy: CapturePolicy,
+}
+
+/// One boundary between two consecutive sessions of the same camera.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureCrossing {
+    pub camera_id: String,
+    pub from_session: String,
+    pub to_session: String,
+    /// Last `segment_seq` carried by the earlier session.
+    pub after_seq: i64,
+    /// First `segment_seq` carried by the later session.
+    pub seq: i64,
+    /// Uncovered time across the boundary. Negative is an overlap.
+    pub hole_ms: i64,
+    /// `covered`, `overlap`, `accounted` (a signed gap cites exactly the
+    /// earlier session's last record), `tolerated` (within the later
+    /// record's signed policy), `unexplained`, or `sequence_skip` (records
+    /// between the two sessions are in neither).
+    pub class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_reason: Option<String>,
+}
+
+/// Cross-session continuity for the whole bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureContinuityReport {
+    #[serde(flatten)]
+    pub grade: CaptureGrade,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crossings: Vec<CaptureCrossing>,
+}
+
+/// The first and last carried camera record per camera in one session.
+///
+/// Records whose graded fields cannot be read are skipped: the per-session
+/// grader already calls that session FAILED or UNVERIFIABLE, and inventing a
+/// crossing out of unreadable bodies would state more than is known. A
+/// session that yields no bounds simply takes part in no crossing.
+pub fn session_capture_bounds(chain: &SessionChain, store: Option<&ArtifactStore>) -> Vec<SessionCaptureBounds> {
+    let Some(store) = store else { return Vec::new() };
+    // (camera_id, segment_seq) -> the record's graded fields, first write
+    // wins per (camera, seq) exactly as the per-session walk sorts them.
+    let mut per_camera: BTreeMap<String, Vec<CamBound>> = BTreeMap::new();
+    for e in &chain.entries {
+        let Some(bytes) = store.get(&e.fields.artifact_hash) else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
+            continue;
+        };
+        if !body
+            .get("schema")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.starts_with("camera_segment/"))
+        {
+            continue;
+        }
+        let Some(policy_s) = body_policy(&body) else { continue };
+        let field_i64 = |name: &str| body.get(name).and_then(Value::as_i64);
+        let (Some(seq), Some(start_ns), Some(end_ns), Some(cam)) = (
+            field_i64("segment_seq"),
+            field_i64("capture_start_utc_ns"),
+            field_i64("capture_end_utc_ns"),
+            body.get("camera_id").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if cam.is_empty() || seq < 0 || end_ns < start_ns {
+            continue;
+        }
+        // A malformed gap is a defect the per-session grader states as
+        // FAILED. Here it is simply not an explanation.
+        let gap = body.get("gap").map(read_gap).and_then(Result::ok).flatten();
+        per_camera.entry(cam.to_owned()).or_default().push(CamBound {
+            seq,
+            start_ns,
+            end_ns,
+            gap_after_seq: gap.as_ref().map(|g| g.after_seq),
+            gap_reason: gap.map(|g| g.reason),
+            policy: CapturePolicy {
+                nominal_segment_ms: ms(policy_s.0),
+                jitter_ms: ms(policy_s.1),
+                max_unexplained_gap_ms: ms(policy_s.2),
+            },
+        });
+    }
+    let mut out = Vec::new();
+    for (camera_id, mut recs) in per_camera {
+        recs.sort_by_key(|r| r.seq);
+        let (Some(first), Some(last)) = (recs.first(), recs.last()) else {
+            continue;
+        };
+        out.push(SessionCaptureBounds {
+            session_id: chain.session_id.clone(),
+            camera_id,
+            first_seq: first.seq,
+            first_start_ns: first.start_ns,
+            first_gap_after_seq: first.gap_after_seq,
+            first_gap_reason: first.gap_reason.clone(),
+            last_seq: last.seq,
+            last_end_ns: last.end_ns,
+            policy: first.policy.clone(),
+        });
+    }
+    out
+}
+
+/// One carried record reduced to what a boundary comparison needs.
+struct CamBound {
+    seq: i64,
+    start_ns: i64,
+    end_ns: i64,
+    gap_after_seq: Option<i64>,
+    gap_reason: Option<String>,
+    policy: CapturePolicy,
+}
+
+/// Human duration for a boundary hole: hours where the number is hours,
+/// seconds where it is seconds, milliseconds below that.
+fn human_ms(hole_ms: i64) -> String {
+    let abs = hole_ms.abs();
+    if abs >= 3_600_000 {
+        format!("{:.2} h", hole_ms as f64 / 3_600_000.0)
+    } else if abs >= 1_000 {
+        format!("{:.3} s", hole_ms as f64 / 1000.0)
+    } else {
+        format!("{hole_ms} ms")
+    }
+}
+
+/// Grade every boundary between consecutive sessions of the same camera.
+///
+/// `None` when no camera has two sessions here: there is no crossing to
+/// judge, and a verdict invented for a single-session bundle would be about
+/// the export's scope rather than the evidence.
+pub fn grade_capture_continuity(bounds: &[SessionCaptureBounds]) -> Option<CaptureContinuityReport> {
+    let mut per_camera: BTreeMap<&str, Vec<&SessionCaptureBounds>> = BTreeMap::new();
+    for b in bounds {
+        per_camera.entry(b.camera_id.as_str()).or_default().push(b);
+    }
+    per_camera.retain(|_, v| v.len() >= 2);
+    if per_camera.is_empty() {
+        return None;
+    }
+
+    let mut crossings = Vec::new();
+    let mut lines = Vec::new();
+    for (camera_id, mut sessions) in per_camera {
+        // Time order, not the order the bundle happens to list them in.
+        // `first_seq` breaks a tie: two sessions cannot both start the
+        // stream, and the sequence says which came first.
+        sessions.sort_by_key(|s| (s.first_start_ns, s.first_seq));
+        for (from, to) in sessions.iter().zip(sessions.iter().skip(1)) {
+            let hole_ms = ms((to.first_start_ns - from.last_end_ns) as f64 / 1e9);
+            let jitter = to.policy.jitter_ms;
+            let accounted_by_gap = to.first_gap_after_seq == Some(from.last_seq);
+            let class = if to.first_seq != from.last_seq + 1 {
+                "sequence_skip"
+            } else if hole_ms < -jitter {
+                "overlap"
+            } else if hole_ms <= jitter {
+                "covered"
+            } else if accounted_by_gap {
+                "accounted"
+            } else if hole_ms <= to.policy.max_unexplained_gap_ms {
+                "tolerated"
+            } else {
+                "unexplained"
+            };
+            let line = match class {
+                "sequence_skip" => format!(
+                    "{camera_id}: segments {}..{} are in neither session ({} -> {}, last carried \
+                     segment_seq {} then {})",
+                    from.last_seq + 1,
+                    to.first_seq - 1,
+                    short_session(&from.session_id),
+                    short_session(&to.session_id),
+                    from.last_seq,
+                    to.first_seq
+                ),
+                "covered" | "overlap" => format!(
+                    "{camera_id}: {} -> {} meets with no uncovered time",
+                    short_session(&from.session_id),
+                    short_session(&to.session_id)
+                ),
+                _ => format!(
+                    "{camera_id}: {} -> {} {} {} ({})",
+                    short_session(&from.session_id),
+                    short_session(&to.session_id),
+                    human_ms(hole_ms),
+                    class,
+                    to.first_gap_reason
+                        .clone()
+                        .unwrap_or_else(|| "no signed gap record".to_owned())
+                ),
+            };
+            lines.push(line);
+            crossings.push(CaptureCrossing {
+                camera_id: camera_id.to_owned(),
+                from_session: from.session_id.clone(),
+                to_session: to.session_id.clone(),
+                after_seq: from.last_seq,
+                seq: to.first_seq,
+                hole_ms,
+                class: class.to_owned(),
+                gap_reason: if class == "accounted" {
+                    to.first_gap_reason.clone()
+                } else {
+                    None
+                },
+            });
+        }
+    }
+
+    // Weakest link, same discipline as every other roll-up here.
+    let grade = crossings
+        .iter()
+        .map(|c| match c.class.as_str() {
+            "covered" | "overlap" => CaptureGrade::Continuous,
+            "accounted" | "tolerated" => CaptureGrade::InterruptedAccounted,
+            _ => CaptureGrade::InterruptedUnexplained,
+        })
+        .max_by_key(CaptureGrade::rank)
+        .unwrap_or(CaptureGrade::Continuous);
+
+    Some(CaptureContinuityReport {
+        grade,
+        detail: lines.join("; "),
+        crossings,
+    })
+}
+
+/// The trailing date of a session id, for report lines that already name the
+/// camera. Falls back to the whole id when there is nothing to trim.
+fn short_session(session_id: &str) -> &str {
+    session_id
+        .rsplit(':')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(session_id)
 }
 
 /// Distinct `camera_id` values the carried camera records claim, across one

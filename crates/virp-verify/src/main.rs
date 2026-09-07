@@ -990,6 +990,20 @@ fn render_text(
             }
         }
     }
+    // The boundaries between sessions, which the per-session grade above
+    // cannot see. Its own line, not folded into capture_completeness: that
+    // result is about what each session says of itself, this one is about
+    // what two of them say where they meet.
+    if let Some(cont) = &b.capture_continuity {
+        let extra = cont.grade.extra().map(|e| format!(" — {e}")).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {:<28} {:<28} {}{extra}",
+            "capture_continuity",
+            cont.grade.label(),
+            cont.detail
+        );
+    }
     // Bytes, not identity. Kept apart from source_device_established on
     // purpose: every cited artifact can verify and still say nothing about
     // which physical camera produced them.

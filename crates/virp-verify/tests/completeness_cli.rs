@@ -184,3 +184,45 @@ fn fail_on_coverage_works_in_json_mode_too() {
     assert_eq!(code_plain, 0);
     assert_eq!(out, out_plain);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-session continuity, at the CLI. Every comp-* fixture carries a single
+// session, so the question has no crossing to answer and the report must not
+// invent one: the line is absent, and the JSON key with it. The grader's own
+// arms are covered by the docket-bundle continuity tests, whose numbers come
+// from the two-camera, three-session-each bundle-blip-20260907.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_single_session_bundle_makes_no_cross_session_continuity_claim() {
+    for name in ["comp-clean-20260829", "comp-gap-20260829", "comp-ux-20260829"] {
+        let (_, out) = run_pinned(name, false);
+        assert!(
+            !out.contains("capture_continuity"),
+            "{name} has one session; there is no boundary between sessions to grade: {out}"
+        );
+        let (_, js) = run_pinned(name, true);
+        let v: serde_json::Value = serde_json::from_str(&js).expect("json");
+        assert!(
+            v["boundary"].get("capture_continuity").is_none(),
+            "{name}: the key must be omitted, not null: {js}"
+        );
+    }
+}
+
+#[test]
+fn the_per_session_capture_grade_is_untouched_by_the_continuity_check() {
+    // The three fixtures' per-session grades are the producer's own, and
+    // adding a bundle-level question must not move any of them.
+    for (name, grade) in [
+        ("comp-clean-20260829", "CONTINUOUS"),
+        ("comp-gap-20260829", "INTERRUPTED / ACCOUNTED"),
+        ("comp-ux-20260829", "INTERRUPTED / UNEXPLAINED"),
+    ] {
+        let (_, out) = run_pinned(name, false);
+        assert!(
+            out.contains(&format!("capture_completeness         {grade}")),
+            "{name} should still grade {grade}: {out}"
+        );
+    }
+}

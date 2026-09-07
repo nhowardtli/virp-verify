@@ -28,7 +28,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{
-    claimed_camera_ids, grade_capture_completeness, summarise_sensor, CaptureGrade, CaptureReport, SensorSummary,
+    claimed_camera_ids, grade_capture_completeness, grade_capture_continuity, session_capture_bounds, summarise_sensor,
+    CaptureContinuityReport, CaptureGrade, CaptureReport, SensorSummary,
 };
 use crate::hash::{is_hex_digest_64, sha256_hex};
 use crate::limits::Limits;
@@ -93,7 +94,14 @@ pub const CHAIN_FORMAT: &str = "v1";
 /// entry-HMAC stripping under a head that carries a `head_hmac` is now
 /// `entry_hmacs` FAILED where 0.7 graded it ABSENT (see the symmetric-tier
 /// note in `verify.rs`), which makes such a session FAILED.
-pub const REPORT_VERSION: &str = "docket-report/0.8";
+/// `0.9` added `boundary.capture_continuity`: the boundaries BETWEEN
+/// consecutive sessions of one camera, which the per-session grader cannot
+/// see because it reads one session at a time. Additive only — omitted from
+/// a bundle where no camera has two sessions, every per-session grade,
+/// verdict and exit code unchanged — and it answers a question the report
+/// previously left open: a hole that lands on a session boundary now has a
+/// measured duration, because both of its sides are in hand.
+pub const REPORT_VERSION: &str = "docket-report/0.9";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSession {
@@ -1676,6 +1684,17 @@ pub struct BoundaryReport {
     /// per-session grades restated. See [`CaptureReport`] on each session
     /// for the outage/overlap detail.
     pub capture_completeness: CaptureSummary,
+    /// The boundaries BETWEEN consecutive sessions of the same camera: the
+    /// one place the per-session grader is structurally blind, because it
+    /// reads one session at a time and a hole on a boundary has one side in
+    /// each. Omitted when no camera here has two sessions, so a
+    /// single-session bundle's report serializes exactly as before. Never a
+    /// re-grade of the per-session result: the resuming record's own gap is
+    /// still, within its session, a left-boundary gap of unavailable
+    /// duration. Here the predecessor it cites is in hand, so the duration
+    /// is stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_continuity: Option<CaptureContinuityReport>,
     /// Are the bytes the camera records were written ABOUT carried here, and
     /// do they still hash to what the records commit to? A boundary question
     /// because for every bundle before the exporter could carry them the
@@ -1850,6 +1869,15 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         });
     let groups = capture_groups(sessions);
 
+    // Cross-session continuity, computed from the bundle's own sessions
+    // rather than from the per-session outcomes: the question is about the
+    // boundaries between them.
+    let mut bounds = Vec::new();
+    for chain in &bundle.sessions {
+        bounds.extend(session_capture_bounds(chain, bundle.artifacts.as_ref()));
+    }
+    let capture_continuity = grade_capture_continuity(&bounds);
+
     // Weakest link across sessions, and the ranking says the point: FAILED
     // outranks ABSENT outranks VERIFIED. A bundle that verifies eight
     // citations and carries none for the ninth is not a verified bundle.
@@ -1943,6 +1971,7 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
             detail: groups.join("; "),
             groups,
         },
+        capture_continuity,
         referenced_artifact_binding,
         witness,
     }
@@ -2328,6 +2357,7 @@ mod tests {
                     detail: String::new(),
                     groups: Vec::new(),
                 },
+                capture_continuity: None,
                 referenced_artifact_binding: None,
                 witness: None,
             },

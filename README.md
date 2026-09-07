@@ -221,6 +221,15 @@ python3 -c "import sqlite3;c=sqlite3.connect('/tmp/snap.db');\
             c.execute('PRAGMA wal_checkpoint(TRUNCATE)');c.commit()"
 ```
 
+The same read-only opening is why a verifier cannot create the
+`chain_entry_hash` index the operator's own C verifier relies on. That index is
+made by the daemon when it opens the database for writing; a read-only reader
+finds it or does without it, and doing without it means a scan per lookup. On a
+chain with tens of thousands of intents that is the difference between seconds
+and hours. If a whole-chain verification on a snapshot is unaccountably slow,
+check whether the snapshot predates the index rather than assuming the verifier
+is at fault: a copy made from an older database carries the schema it had.
+
 ### The one command
 
 ```sh

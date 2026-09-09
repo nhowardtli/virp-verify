@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Detached Ed25519 signature verification (VIRP D-1, scheme
 //! `ed25519-detached-v1`).
 //!

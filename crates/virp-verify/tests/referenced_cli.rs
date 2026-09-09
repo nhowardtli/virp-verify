@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `referenced_artifact_binding`: the bytes a camera record is ABOUT.
 //!
 //! The fixture is the 2026-09-04 Axis session from the two-point tamper pass

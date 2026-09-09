@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Build-time capture of the commit this binary was built from.
 //!
 //! An examiner reading a report needs to know which verifier produced it,

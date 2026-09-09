@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Shared fixture loading for the golden-vector tests.
 #![allow(dead_code)]
 

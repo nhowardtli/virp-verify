@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Step 3: the three verification tiers and the verdict vocabulary.
 //!
 //! The signed session under test is assembled entirely from golden vectors:

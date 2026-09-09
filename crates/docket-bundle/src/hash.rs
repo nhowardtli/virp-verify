@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Hashing and key identification.
 
 use sha2::{Digest, Sha256};

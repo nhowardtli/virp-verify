@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The witness repository's published golden vectors, run against Docket's
 //! own RFC 9162 implementation.
 //!

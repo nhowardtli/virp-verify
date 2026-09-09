@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
 # Build the static virp-verify a stranger can run without a Rust toolchain.
 #
 # Three reviewers in a row had no Rust installed. This script produces one

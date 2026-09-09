@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Cross-session capture continuity.
 //!
 //! The per-session grader reads one session at a time, so a hole that lands

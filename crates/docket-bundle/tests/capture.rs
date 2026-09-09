@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Capture-completeness grader tests.
 //!
 //! These bodies are SYNTHETIC: they exercise Docket's grader arms (the

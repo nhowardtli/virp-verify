@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Step 4: the CLI verifies the synthetic fixture bundle built from the
 //! golden vectors, and reports every tampered variant honestly.
 

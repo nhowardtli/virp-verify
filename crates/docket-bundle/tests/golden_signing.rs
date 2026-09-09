@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Step 2 golden tests: every signature in chain-signing-v1.json reproduced
 //! from the PUBLIC key alone, the domain tags, negative cases, and the
 //! session-granularity key rule.

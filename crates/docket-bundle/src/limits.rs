@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Resource ceilings for reading a bundle.
 //!
 //! The reader loads whole JSON files into memory, deserialises every entry,

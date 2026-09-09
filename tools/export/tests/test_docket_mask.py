@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """
 The Python half of the shared corpus contract.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Which build produced this report.
 //!
 //! "0.1.0" does not identify a verifier during development: every build

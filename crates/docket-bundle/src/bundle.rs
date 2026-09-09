@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The minimal Docket evidence bundle: a directory.
 //!
 //! ```text

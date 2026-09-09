@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Producer-signature verification — the CAPTURE HOST's trust boundary.
 //!
 //! A `camera_segment/*` or `camera_retention/*` body carries `producer_sig`:

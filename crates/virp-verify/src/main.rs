@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! virp-verify — standalone VIRP chain verifier (Docket).
 //!
 //! Reads an evidence bundle, recomputes hashes, links and detached Ed25519

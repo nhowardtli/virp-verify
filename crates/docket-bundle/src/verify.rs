@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The verifier: walks one session's chain and grades each property.
 //!
 //! Three tiers, each independent (SECURITY.md "Three verification tiers"):

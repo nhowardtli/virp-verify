@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Minisign seal-signature verification against the committed TEST vector:
 //! a throwaway key's signature over the real D-0 seal document bytes (see
 //! tests/vectors/README.md — it is NOT the operator's signature, and the

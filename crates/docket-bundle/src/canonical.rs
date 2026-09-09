@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! VIRP canonical byte constructions, re-implemented from the protocol's
 //! documented wire facts (DRAFT07-NOTES §2, `include/virp_chain.h`,
 //! `build_canonical_json` / `head_canonical` / `compute_genesis_hash`).

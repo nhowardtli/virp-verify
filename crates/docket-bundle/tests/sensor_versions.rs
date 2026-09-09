@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `camera_segment/3`, `/4` and `/5`: version-strict field sets, and the
 //! sensor-signature summary.
 //!

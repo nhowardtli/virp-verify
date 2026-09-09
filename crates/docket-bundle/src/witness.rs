@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Witness inclusion: was this session's head placed in a third party's
 //! append-only log, and does the proof still recompute?
 //!

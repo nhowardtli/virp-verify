@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Producer-signature tests over PRODUCER-MADE evidence.
 //!
 //! The comp-* fixtures are real producer output (see

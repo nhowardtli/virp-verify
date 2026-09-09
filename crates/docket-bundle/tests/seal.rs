@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The D-0 seal as an anchor: recompute its Merkle root over all 350 listed
 //! sessions, and anchor the Appendix A head against it.
 

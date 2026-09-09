@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! A minimal HTTP/1.1 GET over `std::net::TcpStream`, for `--witness-url`.
 //!
 //! This is the ONLY code in `virp-verify` that opens a socket, and it runs

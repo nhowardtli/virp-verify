@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! End-to-end capture-completeness tests over PRODUCER-MADE evidence.
 //!
 //! The three comp-* fixtures were produced by the real camera producer

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Top-line verdict framing: a FAILED boundary result must ride in the
 //! OVERALL VERDICT line itself.
 //!

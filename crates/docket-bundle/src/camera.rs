@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Capture completeness — a SEPARATE axis from cryptographic verification.
 //!
 //! Chain contiguity (the `contiguity` property) proves no sequence number is

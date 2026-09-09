@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `witness`: was this head placed in somebody else's log, and does the proof
 //! still recompute?
 //!

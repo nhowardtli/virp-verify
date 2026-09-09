@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! One key format on both sides of Docket.
 //!
 //! The exporter's `--keys` took the D-1 public half as a bare hex file; the

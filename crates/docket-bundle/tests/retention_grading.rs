@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Retention grading: `camera_retention/1` under producer_signature, the
 //! `absent_by_declared_policy` citation path, and the declarations listing.
 //!

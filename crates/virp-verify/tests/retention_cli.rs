@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! End-to-end: what an examiner sees when a bundle carries a
 //! `camera_retention/1` record.
 //!

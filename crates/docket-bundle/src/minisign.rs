@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Minisign VERIFICATION of the D-0 seal's detached signature.
 //!
 //! Verification only, like everything in this crate: public keys in,

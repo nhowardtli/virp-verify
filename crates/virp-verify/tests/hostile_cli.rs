@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Hostile-input regression tests at the binary boundary.
 //!
 //! `tests/hostile.rs` in `docket-bundle` proves the library functions are

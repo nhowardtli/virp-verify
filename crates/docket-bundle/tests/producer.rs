@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Producer-signature unit tests: the Python-compatible canonicalizer
 //! against vectors produced by the producer's own serialization call
 //! (`json.dumps(obj, sort_keys=True, separators=(",", ":"),

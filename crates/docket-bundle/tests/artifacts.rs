@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Carried artifact bodies (`manifest.artifacts`): the bundle can carry the
 //! exact bytes each entry's `artifact_hash` commits to, and the verifier
 //! grades `artifact_binding` per session — VERIFIED only by recomputing

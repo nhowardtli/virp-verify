@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Step 1 golden tests: canonical bytes, entry hash, genesis, head canonical,
 //! key_id — every value reproduced from the VIRP fixtures, plus the
 //! one-byte-mutation discipline (every mutation must be detected).

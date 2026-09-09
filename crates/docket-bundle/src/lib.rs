@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! docket-bundle — the bottom layer of Docket.
 //!
 //! Docket reads VIRP chains and assembles evidence. This crate holds the

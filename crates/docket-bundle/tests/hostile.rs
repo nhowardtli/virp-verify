@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Hostile-input regression tests.
 //!
 //! virp-verify is a free tool that reads evidence supplied by other people,

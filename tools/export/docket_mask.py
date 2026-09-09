@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """
 docket_mask — the Python half of Docket's masking layer.
 

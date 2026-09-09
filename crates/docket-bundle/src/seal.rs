@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The D-0 seal (`virp-seal/1`) as an optional anchor.
 //!
 //! The seal is the operator's signed attestation of every session head as

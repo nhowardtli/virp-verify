@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 export_bundle.py — export a Docket evidence bundle (directory form) from a
 VIRP chain database snapshot.

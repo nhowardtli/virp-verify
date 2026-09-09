@@ -1,4 +1,5 @@
-# cargo-deny configuration for the Docket workspace.
+# SPDX-License-Identifier: Apache-2.0
+# License/source audit for the standalone verifier and all source dependencies.
 # Run: cargo deny check   (CI runs the same command)
 
 [graph]
@@ -21,8 +22,8 @@ ignore = []
 # Licenses: an explicit permissive allowlist enumerating ONLY what the
 # current dependency tree actually needs (cargo deny list, 2026-08-23).
 # Add to this list deliberately when a new dependency requires it; do not
-# wildcard. Workspace crates are LicenseRef-Proprietary / publish = false
-# and are exempted via `private.ignore` rather than allowlisted.
+# wildcard. Include unpublished local crates: publish=false must never hide
+# a proprietary dependency from the standalone verifier audit.
 [licenses]
 version = 2
 allow = [
@@ -35,7 +36,7 @@ confidence-threshold = 0.8
 exceptions = []
 
 [licenses.private]
-ignore = true
+ignore = false
 
 # ---------------------------------------------------------------------------
 # Bans: duplicate versions are a warning (syn 2.x + 3.x currently coexist

@@ -325,4 +325,10 @@ nothing, and grades nothing. What stays in Docket's private tree is the report
 engine, the viewer, the claims layer, and the Rust half of the redaction
 layer — none of which an examiner needs to check a bundle.
 
-Apache License 2.0. See `LICENSE` and `NOTICE`.
+Mixed licensing; see `LICENSING.md`, `LICENSE-APACHE`, and the preserved `NOTICE`.
+
+
+Current licensing policy: see [LICENSING.md](LICENSING.md). Only the named core
+or standalone-verifier boundary is Apache-2.0. SDK, exporter, and other product
+tooling carry a proprietary policy; previous Apache grants remain valid for
+covered material. Missing terms and ownership conflicts are documented there.

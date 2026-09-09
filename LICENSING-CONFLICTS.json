@@ -1,0 +1,16 @@
+{
+  "format": "virp-license-transition/1",
+  "prior_revision": "9ee11b8a8f02cb6b2eed3584850495e584f31ab6",
+  "prior_license": "Apache-2.0",
+  "requested_policy": "LicenseRef-Proprietary",
+  "prior_permissions_preserved": true,
+  "ownership": "Existing notices name Third Level IT LLC; this policy does not establish requester ownership or authority over other contributors.",
+  "paths_with_changed_designation": [
+    "tools/export/docket_mask.py",
+    "tools/export/export_bundle.py",
+    "tools/export/tests/test_docket_mask.py",
+    "tools/export/tests/test_export_bundle.py"
+  ],
+  "preserved_embedded_apache_notices": [],
+  "commercial_terms": "Not supplied; no agreement invented."
+}

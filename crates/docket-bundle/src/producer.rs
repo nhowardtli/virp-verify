@@ -1,4 +1,4 @@
-//! Producer-signature verification — the CAPTURE HOST's trust boundary.
+//! Producer-signature verification — the producer's separate trust boundary.
 //!
 //! A `camera_segment/*` or `camera_retention/*` body carries `producer_sig`:
 //! raw Ed25519 (no domain tag) by the capture host's own producer key over
@@ -193,7 +193,8 @@ impl ProducerSignerReport {
     }
 }
 
-/// Grade the producer signatures of one session's carried camera records.
+/// Grade producer signatures of camera records and any body carrying both
+/// producer_key_id and producer_sig, independent of its schema name.
 ///
 /// `keys` are the examiner-supplied producer public keys (`--producer-key`),
 /// each matched to records by its derived key id. Empty means none were
@@ -208,7 +209,7 @@ pub fn grade_producer_signatures(
     let Some(store) = store else {
         return ProducerSignerReport::unverifiable(
             "the bundle carries no artifact bodies (exported without --artifacts), so no \
-             producer-signed camera record can be read",
+             producer-signed record can be read",
             Vec::new(),
         );
     };
@@ -229,7 +230,18 @@ pub fn grade_producer_signatures(
         match store.get(&e.fields.artifact_hash) {
             None => hash_only += 1,
             Some(bytes) => {
+                if crate::sha256_hex(bytes) != e.fields.artifact_hash {
+                    return ProducerSignerReport {
+                        signature_validity: Status::failed("producer body does not bind to artifact_hash"),
+                        trust: SignerTrust::Unestablished, trust_source: None,
+                        detail: "producer body binding failed before vocabulary or signature grading".into(), claimed_key_ids: Vec::new(),
+                    };
+                }
                 if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+                    if v.get("producer_key_id").is_some() && v.get("producer_sig").is_some() {
+                        cam_bodies.push((e.fields.sequence, v));
+                        continue;
+                    }
                     match v.get("schema").and_then(Value::as_str) {
                         Some(s) if is_producer_signed_schema(s) => {
                             cam_bodies.push((e.fields.sequence, v));
@@ -258,7 +270,7 @@ pub fn grade_producer_signatures(
             return ProducerSignerReport::unverifiable(
                 &format!(
                     "{hash_only} of {} entries have no carried body; whether any of them is a \
-                     producer-signed camera record cannot be seen",
+                     producer-signed record cannot be seen",
                     chain.entries.len()
                 ),
                 Vec::new(),
@@ -273,9 +285,8 @@ pub fn grade_producer_signatures(
                 trust: SignerTrust::Unestablished,
                 trust_source: None,
                 detail: format!(
-                    "schema not examined by this verifier: the carried bodies declare {} and \
-                     no producer-signed record (camera_segment/*, camera_retention/*) is \
-                     among them; nothing here was checked, and nothing here passed",
+                    "no full producer signature vocabulary in the carried records (schemas: {}); \
+                     producer signatures are absent, not verified",
                     unexamined.join(", ")
                 ),
                 claimed_key_ids: Vec::new(),
@@ -285,7 +296,7 @@ pub fn grade_producer_signatures(
             signature_validity: Status::Absent,
             trust: SignerTrust::Unestablished,
             trust_source: None,
-            detail: "no producer-signed record (camera_segment/*, camera_retention/*) among \
+            detail: "no record carrying full producer signature vocabulary among \
                      the carried bodies; there is no producer signature to check"
                 .to_owned(),
             claimed_key_ids: Vec::new(),
@@ -456,7 +467,7 @@ pub fn grade_producer_signatures(
             trust: SignerTrust::Mismatch,
             trust_source: Some(TrustSource::ExaminerTrustStore),
             detail: format!(
-                "the examiner supplied {} producer key(s) and {} of {} camera record(s) name a \
+                "the examiner supplied {} producer key(s) and {} of {} producer record(s) name a \
                  producer_key_id outside that set",
                 keys.len(),
                 cam_bodies.len() - verified,
@@ -476,8 +487,8 @@ pub fn grade_producer_signatures(
     if hash_only > 0 {
         return ProducerSignerReport {
             signature_validity: Status::unverifiable(format!(
-                "{hash_only} of {} entries have no carried body, so whether they are camera \
-                 records with producer signatures cannot be seen; the {verified} carried camera \
+                "{hash_only} of {} entries have no carried body, so whether they are \
+                 records with producer signatures cannot be seen; the {verified} carried producer \
                  record signature(s) verified under the supplied key(s), but session-level \
                  producer verification cannot be claimed over records this verifier cannot read",
                 chain.entries.len()

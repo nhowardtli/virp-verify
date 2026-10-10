@@ -9,6 +9,7 @@
 //! verifies and reports. `unsafe` is forbidden workspace-wide.
 #![forbid(unsafe_code)]
 
+pub mod content;
 pub mod bundle;
 pub mod camera;
 pub mod canonical;

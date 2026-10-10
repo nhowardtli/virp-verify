@@ -142,8 +142,7 @@ fn json_reports_all_three_producer_results_distinctly() {
 
 /// A record whose producer_sig was altered fails under the RIGHT key —
 /// FAILED (checked and wrong), a different result from MISMATCH (wrong
-/// key). The tamper also breaks the artifact binding, and both failures
-/// stay independent.
+/// key). Hash binding fails first; unbound bodies are not producer-graded.
 #[test]
 fn altered_producer_sig_fails_under_the_correct_key() {
     let src = fixture("comp-clean-20260829");
@@ -167,8 +166,8 @@ fn altered_producer_sig_fails_under_the_correct_key() {
     let (code, out) = run(&["--producer-key", &k, &dst_s]);
     assert_eq!(code, 1, "the altered body breaks the artifact binding: {out}");
     assert!(out.contains("producer_signature     FAILED"), "{out}");
-    assert!(out.contains("does not verify"), "{out}");
-    assert!(out.contains("producer_trust         MISMATCH"), "{out}");
+    assert!(out.contains("producer body does not bind to artifact_hash"), "{out}");
+    assert!(out.contains("producer_trust         UNESTABLISHED"), "{out}");
     let _ = fs::remove_dir_all(&dst);
 }
 
@@ -232,7 +231,7 @@ fn uncarried_body_beside_a_verified_camera_record_is_unverifiable_not_verified()
     };
     assert!(reason.contains("1 of 2 entries have no carried body"), "{reason}");
     assert!(
-        reason.contains("1 carried camera record signature(s) verified"),
+        reason.contains("1 carried producer record signature(s) verified"),
         "{reason}"
     );
     assert_eq!(partial.trust, SignerTrust::Unestablished, "{partial:?}");

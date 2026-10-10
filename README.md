@@ -326,3 +326,34 @@ engine, the viewer, the claims layer, and the Rust half of the redaction
 layer — none of which an examiner needs to check a bundle.
 
 Apache License 2.0. See `LICENSE` and `NOTICE`.
+
+### v0.1.4: body labels and producer reporting
+
+Text and `--json` report `content_tier` and `mode` for every entry, with separate
+counts for each label. Labels come from artifact bodies only after their bytes
+match the entry's `artifact_hash`; missing, malformed or unbound bodies yield
+`unverified`. Bound bodies without a label yield `absent`; unsupported labels
+are counted as `unknown`. No manifest label is used as a fallback, and tiers
+are never averaged. These labels describe recorded claims, not signer trust.
+
+Producer signatures are checked on any body containing both `producer_key_id`
+and `producer_sig`, using the supplied `--producer-key` and the existing
+canonical body-minus-signature convention. Existing camera schema requirements
+still apply. A chain signature never substitutes for a producer signature.
+
+When producer vocabulary is absent and every entry signature verifies under a
+key carried in the bundle's key file, the report may state:
+
+```text
+producer: ABSENT  no producer key declared; chain signed by key <key_id>
+```
+
+Multiple signing keys are listed separately. The same sentence is stored in
+JSON at `content.producer_summary`; it contains no producer verification claim.
+Failed or unverifiable entry signatures suppress this sentence. A pinned key
+retains its trust provenance even when the bundle also carries it.
+
+A producer-role field is deferred to a later bundle revision with a second
+signer. This version adds no manifest fields or role declarations and does
+not change `docket-bundle/0.1` or existing evidence. Release binaries are built at their own tag and checked against signed
+`SHA256SUMS`; see `docs/VERIFIER-RELEASE.md`.

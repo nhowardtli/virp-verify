@@ -1447,7 +1447,9 @@ impl Bundle {
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
         let boundary = boundary_report(self, &sessions);
+        let content = crate::content::grade(self, &sessions);
         let mut report = BundleReport {
+            content,
             docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: self.manifest.docket_bundle_version.clone(),
             chain_format: self.manifest.chain_format.clone(),
@@ -1979,6 +1981,8 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleReport {
+    #[serde(default)]
+    pub content: crate::content::ContentReport,
     /// Report schema version ([`REPORT_VERSION`]). Absent from reports
     /// produced before `docket-report/0.2`.
     #[serde(default)]
@@ -2337,6 +2341,7 @@ mod tests {
 
     fn report_of(sessions: Vec<SessionOutcome>, verdict: Verdict, capture: CaptureGrade) -> BundleReport {
         let mut r = BundleReport {
+            content: Default::default(),
             docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: super::BUNDLE_VERSION.to_owned(),
             chain_format: super::CHAIN_FORMAT.to_owned(),

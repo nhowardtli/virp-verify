@@ -117,6 +117,7 @@ impl TrustSource {
 #[derive(Debug, Clone, Default)]
 pub struct Keyring {
     keys: BTreeMap<String, (PublicKey, TrustSource)>,
+    carried: std::collections::BTreeSet<String>,
 }
 
 impl Keyring {
@@ -136,10 +137,13 @@ impl Keyring {
     /// provenance to a bundle copy of itself: same id means same bytes
     /// (`key_id` is derived), so the examiner-supplied entry stands.
     pub fn insert_bundle(&mut self, key: PublicKey) {
+        self.carried.insert(key.key_id().to_owned());
         self.keys
             .entry(key.key_id().to_owned())
             .or_insert((key, TrustSource::BundleProvidedKey));
     }
+
+    pub fn was_carried(&self, key_id: &str) -> bool { self.carried.contains(key_id) }
 
     pub fn get(&self, key_id: &str) -> Option<&PublicKey> {
         self.keys.get(key_id).map(|(k, _)| k)

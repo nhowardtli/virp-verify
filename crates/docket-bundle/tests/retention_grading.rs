@@ -126,15 +126,15 @@ fn a_tampered_retention_record_is_failed() {
 }
 
 #[test]
-fn an_unknown_schema_is_absent_and_says_it_was_not_examined() {
+fn an_unknown_schema_without_full_vocabulary_is_absent() {
     let body = serde_json::to_vec(&json!({"schema": "tacacs_accounting/1", "whatever": true})).unwrap();
     let mut store = ArtifactStore::new();
     let chain = chain_of("something:else:2026-09-05", &[body], &mut store);
     let r = grade_producer_signatures(&chain, Some(&store), &[scratch_key()]);
     assert_eq!(r.signature_validity, Status::Absent, "{r:?}");
     assert!(
-        r.detail.contains("schema not examined by this verifier"),
-        "an unexamined body must SAY it was unexamined: {r:?}"
+        r.detail.contains("no full producer signature vocabulary"),
+        "a body without vocabulary must not imply producer verification: {r:?}"
     );
     assert!(r.detail.contains("tacacs_accounting/1"), "{r:?}");
     // The load-bearing half: never a pass.

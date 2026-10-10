@@ -744,6 +744,12 @@ fn render_text(
     let _ = writeln!(out, "secrets: none — this verifier holds no K_chain and no private key");
     let _ = writeln!(out);
 
+    if let Some(line) = &report.content.producer_summary { let _ = writeln!(out, "{line}"); }
+    let _ = writeln!(out, "content_tier counts: {:?}", report.content.tier_counts);
+    let _ = writeln!(out, "mode counts: {:?}", report.content.mode_counts);
+    for e in &report.content.entries {
+        let _ = writeln!(out, "entry {}:{} content_tier={} mode={}", e.session_id, e.sequence, e.content_tier, e.mode);
+    }
     for s in &report.sessions {
         let r = &s.report;
         let _ = write!(out, "session {}  ({} entries)", r.session_id, r.entry_count);
@@ -1054,7 +1060,7 @@ fn render_text(
     );
     let _ = writeln!(
         out,
-        "What the producer signature means (the capture host's own key over each camera record body, minus producer_sig — a separate trust boundary from the O-Node chain key; neither key ever stands in for the other):"
+        "What the producer signature means (the producer's own key over each record carrying the producer vocabulary, minus producer_sig — a separate trust boundary from the O-Node chain key; neither key ever stands in for the other):"
     );
     let _ = writeln!(
         out,

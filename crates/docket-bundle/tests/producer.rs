@@ -209,3 +209,32 @@ fn hash_only_entries_without_carried_camera_records_are_unverifiable_not_absent(
     assert!(reason.contains("no carried body"), "{reason}");
     assert_eq!(r.trust, SignerTrust::Unestablished);
 }
+
+#[test]
+fn arbitrary_schema_full_vocabulary_is_graded_with_its_own_signature() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use docket_bundle::PublicKey;
+    let sk = SigningKey::from_bytes(&[42; 32]);
+    let pk = PublicKey::from_hex(&hex::encode(sk.verifying_key().as_bytes())).unwrap();
+    let mut body = json!({"schema":"generic-test/1", "producer_key_id":pk.key_id(), "value":"test"});
+    let sig = sk.sign(&canonical_json_bytes(&body));
+    body["producer_sig"] = json!(hex::encode(sig.to_bytes()));
+    let (chain, mut store) = chain_with(&[body.clone()]);
+    assert_eq!(grade_producer_signatures(&chain, Some(&store), std::slice::from_ref(&pk)).signature_validity, Status::Verified);
+    assert!(matches!(grade_producer_signatures(&chain, Some(&store), &[]).signature_validity, Status::Unverifiable {..}));
+    let wrong = PublicKey::from_hex(&hex::encode(SigningKey::from_bytes(&[43;32]).verifying_key().as_bytes())).unwrap();
+    assert_ne!(grade_producer_signatures(&chain, Some(&store), &[wrong]).signature_validity, Status::Verified);
+    body["value"] = json!("tampered");
+    store.insert(chain.entries[0].fields.artifact_hash.clone(), serde_json::to_vec(&body).unwrap());
+    assert!(grade_producer_signatures(&chain, Some(&store), std::slice::from_ref(&pk)).signature_validity.is_failed());
+    let (rebound, rebound_store) = chain_with(&[body]);
+    assert!(grade_producer_signatures(&rebound, Some(&rebound_store), &[pk]).signature_validity.is_failed());
+}
+
+#[test]
+fn arbitrary_schema_without_full_vocabulary_is_absent() {
+    for body in [json!({"schema":"generic-test/1"}), json!({"schema":"generic-test/1","producer_key_id":"00".repeat(16)})] {
+        let (chain,store)=chain_with(&[body]);
+        assert_eq!(grade_producer_signatures(&chain,Some(&store),&[]).signature_validity,Status::Absent);
+    }
+}

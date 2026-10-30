@@ -1,0 +1,27 @@
+{
+  "session_id": "approval:R-CUR",
+  "entries": [
+    {
+      "artifact_hash": "6fa6b274a035d418aa5d95b7f71c81de669e31b4277283385dbedbfc267f1015",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "proposal:1579cebbcc4aea0d8fd6a0294810f7db",
+      "artifact_schema_version": "1",
+      "artifact_type": "proposal",
+      "monotonic_ns": 4977809480496,
+      "previous_entry_hash": "64f057e846f96848723f7f1a321026c3633a10d7858d53ea9b3f5618afb850d2",
+      "sequence": 0,
+      "session_id": "approval:R-CUR",
+      "signer_node_id": 202235905,
+      "signer_org_id": "local",
+      "timestamp_ns": 1793348652075700054,
+      "chain_entry_hash": "d216336d0f05e662e63d081c1a80afa59d9944f12c1d4c6279a8ffb6291c14a0",
+      "chain_hmac": "06bd446f9d28ce04e0a33953942dc9b46fba0e228723f85ca25e9cebf1f86325"
+    }
+  ],
+  "head": {
+    "session_id": "approval:R-CUR",
+    "last_sequence": 0,
+    "last_entry_hash": "d216336d0f05e662e63d081c1a80afa59d9944f12c1d4c6279a8ffb6291c14a0",
+    "head_hmac": "154429b8f6bc120713a8d7e0dfb4d371d36ce655a47785d3966ca91c1a0e64f6"
+  }
+}

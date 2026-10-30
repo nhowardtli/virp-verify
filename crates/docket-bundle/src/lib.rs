@@ -16,6 +16,7 @@ pub mod hash;
 pub mod limits;
 pub mod minisign;
 pub mod producer;
+pub mod refusal;
 pub mod seal;
 pub mod sig;
 pub mod verify;
@@ -38,6 +39,10 @@ pub use minisign::{MinisignError, MinisignPublicKey, MinisignSignature};
 pub use producer::{
     canonical_json_bytes, grade_producer_signatures, is_producer_signed_schema, read_producer_key_file,
     ProducerSignerReport,
+};
+pub use refusal::{
+    canonical_command, grade_refusal_evasion, lift_canonical, op_key_append, op_key_execute, EvadedRefusal,
+    RefusalEvasionReport,
 };
 pub use seal::Seal;
 pub use sig::{check_session_key_binding, PublicKey, SessionKeyBinding, SessionKeyError, SigDomain, SigError};

@@ -51,8 +51,8 @@ virp-verify — Docket standalone VIRP chain verifier
 
 USAGE:
     virp-verify [--json] [--pin FILE]... [--producer-key FILE]...
-                [--witness-key FILE]... [--witness-url URL]
-                [--fail-on-coverage] [--show-path] [--max-sessions N]
+                [--approver-key FILE]... [--witness-key FILE]... [--witness-url URL]
+                [--fail-on-coverage] [--fail-on-evasion] [--show-path] [--max-sessions N]
                 [--max-entries N] [--seal-key FILE [--seal-sig FILE]] <bundle-dir>
 
 ARGS:
@@ -85,6 +85,17 @@ OPTIONS:
                          O-Node chain key (--pin) — one never stands in for
                          the other. Without this flag the producer signature
                          is UNVERIFIABLE and producer trust UNESTABLISHED.
+    --approver-key FILE  approver PUBLIC key (the owner key enrolled in the O-Node's
+                         approvers.json; 32 raw bytes or 64 hex chars). Repeatable.
+                         Checks refusal_lifted/1 entries — the owner clearing a
+                         cross-identity refusal taint. Must arrive OUT OF BAND.
+                         Without it a carried lift is UNVERIFIABLE and does NOT
+                         clear the refusal it names: the retry is reported.
+    --fail-on-evasion    exit 7 when the cross_identity_refusal boundary result
+                         is FAILED (an operation refused for one uid was finished
+                         by another inside the refusal window, no valid lift) and
+                         the chain is otherwise intact. Off by default: the
+                         result is beside the verdict, not inside it.
     --witness-key FILE   witness PUBLIC key, for a bundle carrying witness
                          material (exporter --witness). Two forms, the same two
                          --pin reads: 64 hex characters, or a docket keys.json
@@ -239,6 +250,8 @@ fn main() -> ExitCode {
     let mut limits = Limits::default();
     let mut pin_paths: Vec<PathBuf> = Vec::new();
     let mut producer_key_paths: Vec<PathBuf> = Vec::new();
+    let mut approver_key_paths: Vec<PathBuf> = Vec::new();
+    let mut fail_on_evasion = false;
     let mut seal_key_path: Option<PathBuf> = None;
     let mut seal_sig_path: Option<PathBuf> = None;
     let mut witness_key_paths: Vec<PathBuf> = Vec::new();
@@ -257,6 +270,10 @@ fn main() -> ExitCode {
                 }
                 "--producer-key" => {
                     producer_key_paths.push(PathBuf::from(&arg));
+                    continue;
+                }
+                "--approver-key" => {
+                    approver_key_paths.push(PathBuf::from(&arg));
                     continue;
                 }
                 "--seal-key" => {
@@ -296,10 +313,11 @@ fn main() -> ExitCode {
         match arg.to_str() {
             Some("--json") => json = true,
             Some("--fail-on-coverage") => fail_on_coverage = true,
+            Some("--fail-on-evasion") => fail_on_evasion = true,
             Some("--show-path") => show_path = true,
             Some(
-                f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--seal-key" | "--seal-sig"
-                | "--witness-key" | "--witness-url"),
+                f @ ("--max-sessions" | "--max-entries" | "--pin" | "--producer-key" | "--approver-key" | "--seal-key"
+                | "--seal-sig" | "--witness-key" | "--witness-url"),
             ) => {
                 // Borrowed from USAGE rather than from `arg`, so the flag name
                 // outlives this iteration without an allocation.
@@ -308,6 +326,7 @@ fn main() -> ExitCode {
                     "--max-entries" => "--max-entries",
                     "--pin" => "--pin",
                     "--producer-key" => "--producer-key",
+                    "--approver-key" => "--approver-key",
                     "--seal-key" => "--seal-key",
                     "--witness-key" => "--witness-key",
                     "--witness-url" => "--witness-url",
@@ -373,6 +392,20 @@ fn main() -> ExitCode {
             }
         }
     }
+    let mut approver_keys = Vec::new();
+    for p in &approver_key_paths {
+        // Same file shapes as --producer-key: 32 raw bytes or 64 hex chars of
+        // an Ed25519 public key. The key_id (sha256(pub)[..16]) is the one the
+        // O-Node's approvers.json derives, so a lift names the key it was
+        // signed with and this tool checks it under that key.
+        match docket_bundle::read_producer_key_file(p) {
+            Ok(k) => approver_keys.push(k),
+            Err(e) => {
+                eprintln!("virp-verify: --approver-key: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     let mut witness_keys = Vec::new();
     for p in &witness_key_paths {
         match docket_bundle::read_key_file(p, &limits) {
@@ -420,13 +453,14 @@ fn main() -> ExitCode {
     // unreachable witness can never stop a bundle being verified — it can
     // only leave one extra row UNVERIFIABLE with the reason.
     let live = witness_url.as_deref().map(|url| fetch_consistency(url, &bundle));
-    let report = bundle.verify_with_witness(
+    let report = bundle.verify_full(
         check.as_ref(),
         &producer_keys,
         &WitnessCheck {
             keys: &witness_keys,
             live: live.as_ref(),
         },
+        &approver_keys,
     );
 
     if json {
@@ -463,6 +497,17 @@ fn main() -> ExitCode {
             CaptureGrade::InterruptedUnexplained | CaptureGrade::Failed { .. }
         ) {
             code = 6;
+        }
+    }
+    // Opt-in, same discipline: integrity wins, and this gate reads the
+    // boundary result beside the verdict. 7 = an operation refused for one
+    // identity was finished by another inside the refusal's window with no
+    // valid owner lift. The chain bytes themselves are intact.
+    if fail_on_evasion && code != 1 {
+        if let Some(r) = &report.boundary.cross_identity_refusal {
+            if r.status.is_failed() {
+                code = 7;
+            }
         }
     }
     ExitCode::from(code)
@@ -1020,6 +1065,57 @@ fn render_text(
     // exactly as internally consistent as it was before witnessing existed.
     if let Some(w) = &b.witness {
         let _ = writeln!(out, "  {:<28} {:<28} {}", "witness", w.status.label(), w.detail);
+    }
+    // An operation refused for one identity, finished by another. Every
+    // hash and link above can verify and this still names the retry: the
+    // refusal entry, the accepted entry, both uids, the operation key.
+    if let Some(r) = &b.cross_identity_refusal {
+        let _ = writeln!(
+            out,
+            "  {:<28} {:<28} {}",
+            "cross_identity_refusal",
+            r.status.label(),
+            r.detail
+        );
+        for f in &r.findings {
+            let retry = f
+                .retry_uid
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let note = f.lift_note.as_ref().map(|n| format!(" note={n}")).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "    EVADED_REFUSAL refusal={} accepted={} kind={} op_key={} refused_uid={} retry_uid={} \
+                 accepted_type={} refusal_session={} accepted_session={} gap_s={:.3} ttl_s={}{}",
+                f.refusal_entry_hash,
+                f.accepted_entry_hash,
+                f.op_kind,
+                f.op_key,
+                f.refused_uid,
+                retry,
+                f.accepted_type,
+                f.refusal_session,
+                f.accepted_session,
+                f.accepted_at_ns.saturating_sub(f.refused_at_ns) as f64 / 1e9,
+                f.ttl_s,
+                note
+            );
+        }
+        if r.lifts_unverifiable > 0 {
+            let _ = writeln!(
+                out,
+                "    note: {} lift(s) could not be verified — pass --approver-key with the approver PUBLIC key \
+                 that signed them; an unverified lift does not clear a refusal",
+                r.lifts_unverifiable
+            );
+        }
+        if r.keyed_refusals == 0 && r.legacy_unkeyed > 0 {
+            let _ = writeln!(
+                out,
+                "    note: every refusal here predates keyed refusals (gate_rejection/1: no uid, no operation key); a \
+                 cross-identity retry before that point is not detectable from chain bytes"
+            );
+        }
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "OVERALL VERDICT: {}", report.verdict_line());

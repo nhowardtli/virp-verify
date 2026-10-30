@@ -1,0 +1,27 @@
+{
+  "session_id": "refusal-lift",
+  "entries": [
+    {
+      "artifact_hash": "563ee9d198006966f0fb4becf18c9336e05ac634d204eb9c2ec013674019bef7",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "lift:neg",
+      "artifact_schema_version": "1",
+      "artifact_type": "refusal_lifted",
+      "monotonic_ns": 4977822224497,
+      "previous_entry_hash": "506f62dea42c6e9e5d2e978033e36d33c4ff0a8962532106dc7e6574d984a8c4",
+      "sequence": 0,
+      "session_id": "refusal-lift",
+      "signer_node_id": 202235905,
+      "signer_org_id": "local",
+      "timestamp_ns": 1793348652088444058,
+      "chain_entry_hash": "8f63e5b901aa1a63cf2cba8f2644b4c392ce76936aa833f6ab991aa6fc61a104",
+      "chain_hmac": "3a82dde856512f537f6e7a9fbe3afd66ea582ef890d1f39b992baedb99aa765d"
+    }
+  ],
+  "head": {
+    "session_id": "refusal-lift",
+    "last_sequence": 0,
+    "last_entry_hash": "8f63e5b901aa1a63cf2cba8f2644b4c392ce76936aa833f6ab991aa6fc61a104",
+    "head_hmac": "a83957d38a52150f00fa18557ac91f58da1adf2c5e4e23677252703e191de3b9"
+  }
+}

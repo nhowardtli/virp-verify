@@ -1,0 +1,43 @@
+{
+  "session_id": "gate-append-refusal",
+  "entries": [
+    {
+      "artifact_hash": "6ef073cc0dc4b5a1d5c6567c53b78fd7988e92c0deda121d6de818e04a8addb3",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "gatereject-6ef073cc0dc4b5a1",
+      "artifact_schema_version": "1",
+      "artifact_type": "gate_rejection",
+      "monotonic_ns": 4977820359870,
+      "previous_entry_hash": "daa1d5df27991afc02249f04e96520fae6ac26f445744acb264cc4db8e2ffbf5",
+      "sequence": 0,
+      "session_id": "gate-append-refusal",
+      "signer_node_id": 202235905,
+      "signer_org_id": "local",
+      "timestamp_ns": 1793348652086579430,
+      "chain_entry_hash": "fc1c6f32de37c477933564a64e2413e78ef7afa7d4a3e0b7a6c4f54b529231d2",
+      "chain_hmac": "33d3e88f80aa67186134f271df6f929f2b963e4e836772b0301677509acb359b"
+    },
+    {
+      "artifact_hash": "a58e5ea86d865a7c23fa30cad1ddafc3b2443f2f993cd8e0e18804d373294d4a",
+      "artifact_hash_alg": "sha256",
+      "artifact_id": "refusalevaded-a58e5ea86d865a7c",
+      "artifact_schema_version": "1",
+      "artifact_type": "refusal_evaded",
+      "monotonic_ns": 4977820639375,
+      "previous_entry_hash": "fc1c6f32de37c477933564a64e2413e78ef7afa7d4a3e0b7a6c4f54b529231d2",
+      "sequence": 1,
+      "session_id": "gate-append-refusal",
+      "signer_node_id": 202235905,
+      "signer_org_id": "local",
+      "timestamp_ns": 1793348652086858936,
+      "chain_entry_hash": "7d256696fa8f8fb2e9316820c6993333806d694bf7725703e794607bad8c194e",
+      "chain_hmac": "1fa5556b48f16258704967066b8788cf3de1d6477169997c47508e72ee6f73c4"
+    }
+  ],
+  "head": {
+    "session_id": "gate-append-refusal",
+    "last_sequence": 1,
+    "last_entry_hash": "7d256696fa8f8fb2e9316820c6993333806d694bf7725703e794607bad8c194e",
+    "head_hmac": "67faadf569a0ba5252249d7bfeefcb847c2a26083fcbc234f51ced305d3a767a"
+  }
+}

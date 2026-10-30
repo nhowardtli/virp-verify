@@ -1,0 +1,42 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=synthetic-evaded.db)",
+  "created_at": "2026-10-30T08:27:22Z",
+  "sessions": [
+    {
+      "session_id": "approval:R-CUR",
+      "path": "sessions/approval_R-CUR.json"
+    },
+    {
+      "session_id": "gate-enforce:R-CUR",
+      "path": "sessions/gate-enforce_R-CUR.json"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "6fa6b274a035d418aa5d95b7f71c81de669e31b4277283385dbedbfc267f1015",
+      "path": "artifacts/6fa6b274a035d418aa5d95b7f71c81de669e31b4277283385dbedbfc267f1015"
+    },
+    {
+      "artifact_hash": "824194748aa1af935cec5346bd03df024564d6eb9c89e4bf2d5b9cc0dd858230",
+      "path": "artifacts/824194748aa1af935cec5346bd03df024564d6eb9c89e4bf2d5b9cc0dd858230"
+    },
+    {
+      "artifact_hash": "917a9f79c0f516d5aa9779f30b37df95423482c897de5f88ac6f50b7a6a7a85a",
+      "path": "artifacts/917a9f79c0f516d5aa9779f30b37df95423482c897de5f88ac6f50b7a6a7a85a"
+    },
+    {
+      "artifact_hash": "bf9c690003017773554b0f6453521c0ddd6b7f56cf3bd3052dcb65d5afddfdfd",
+      "path": "artifacts/bf9c690003017773554b0f6453521c0ddd6b7f56cf3bd3052dcb65d5afddfdfd"
+    },
+    {
+      "artifact_hash": "d52ff46b86218364052c0b85c22796ba34e0d7eb95a2ac523904253c277ef62f",
+      "path": "artifacts/d52ff46b86218364052c0b85c22796ba34e0d7eb95a2ac523904253c277ef62f"
+    },
+    {
+      "artifact_hash": "dfe2ba4f4b50a7b99b91537fb3d8f2b2af13e16ab744743506c047288f43bbde",
+      "path": "artifacts/dfe2ba4f4b50a7b99b91537fb3d8f2b2af13e16ab744743506c047288f43bbde"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "docket_bundle_version": "docket-bundle/0.1",
+  "chain_format": "v1",
+  "producer": "docket export_bundle.py 0.1 (db=synthetic-clean.db)",
+  "created_at": "2026-10-30T08:27:22Z",
+  "sessions": [
+    {
+      "session_id": "approval:R-CUR",
+      "path": "sessions/approval_R-CUR.json"
+    },
+    {
+      "session_id": "gate-append-refusal",
+      "path": "sessions/gate-append-refusal.json"
+    },
+    {
+      "session_id": "gate-enforce:R-CUR",
+      "path": "sessions/gate-enforce_R-CUR.json"
+    },
+    {
+      "session_id": "refusal-lift",
+      "path": "sessions/refusal-lift.json"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "0379ff9297db794583b5eb726c8ff8ff3310d2e179bf5f65361edb4534b5487c",
+      "path": "artifacts/0379ff9297db794583b5eb726c8ff8ff3310d2e179bf5f65361edb4534b5487c"
+    },
+    {
+      "artifact_hash": "563ee9d198006966f0fb4becf18c9336e05ac634d204eb9c2ec013674019bef7",
+      "path": "artifacts/563ee9d198006966f0fb4becf18c9336e05ac634d204eb9c2ec013674019bef7"
+    },
+    {
+      "artifact_hash": "6ef073cc0dc4b5a1d5c6567c53b78fd7988e92c0deda121d6de818e04a8addb3",
+      "path": "artifacts/6ef073cc0dc4b5a1d5c6567c53b78fd7988e92c0deda121d6de818e04a8addb3"
+    },
+    {
+      "artifact_hash": "a58e5ea86d865a7c23fa30cad1ddafc3b2443f2f993cd8e0e18804d373294d4a",
+      "path": "artifacts/a58e5ea86d865a7c23fa30cad1ddafc3b2443f2f993cd8e0e18804d373294d4a"
+    },
+    {
+      "artifact_hash": "b058fe93c4645248b1d0ed19bfc5f755062b3f28daa37fe288031de3fe889b8c",
+      "path": "artifacts/b058fe93c4645248b1d0ed19bfc5f755062b3f28daa37fe288031de3fe889b8c"
+    },
+    {
+      "artifact_hash": "bec7b86da1464766d6dad93e5622cc983bc26982237ebbef486c0471869933ee",
+      "path": "artifacts/bec7b86da1464766d6dad93e5622cc983bc26982237ebbef486c0471869933ee"
+    },
+    {
+      "artifact_hash": "cb5cdf97ded14730ac71b9cf802fa822886f6ced55b8597cc1c242ae12b3b4fc",
+      "path": "artifacts/cb5cdf97ded14730ac71b9cf802fa822886f6ced55b8597cc1c242ae12b3b4fc"
+    },
+    {
+      "artifact_hash": "ed38e485d737cae35ff79e56bd831cdacc90f27e6695e3b407a430f0d8714cc6",
+      "path": "artifacts/ed38e485d737cae35ff79e56bd831cdacc90f27e6695e3b407a430f0d8714cc6"
+    },
+    {
+      "artifact_hash": "f78069bf990b97487c7d3e157ddbee1c90bb68360a3ed7f7d8507d62c80d4784",
+      "path": "artifacts/f78069bf990b97487c7d3e157ddbee1c90bb68360a3ed7f7d8507d62c80d4784"
+    }
+  ]
+}

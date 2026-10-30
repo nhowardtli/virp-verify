@@ -1325,6 +1325,21 @@ impl Bundle {
         producer_keys: &[PublicKey],
         witness: &WitnessCheck<'_>,
     ) -> BundleReport {
+        self.verify_full(check, producer_keys, witness, &[])
+    }
+
+    /// Like [`Bundle::verify_with_witness`], plus the examiner's out-of-band
+    /// APPROVER public keys (`--approver-key`): the keys enrolled in the
+    /// O-Node's `approvers.json` that an owner signs a `refusal_lifted/1`
+    /// with. Without them a carried lift is UNVERIFIABLE and does not clear
+    /// a refusal — the cross-identity check then fails closed and says so.
+    pub fn verify_full(
+        &self,
+        check: Option<&SealKeyCheck<'_>>,
+        producer_keys: &[PublicKey],
+        witness: &WitnessCheck<'_>,
+        approver_keys: &[PublicKey],
+    ) -> BundleReport {
         // The examiner's own chain keys, used ONLY to report whether the
         // submitter's signature over a witness leaf holds. A key that came
         // from inside the bundle can never say anything about who asked the
@@ -1446,7 +1461,7 @@ impl Bundle {
         });
 
         let verdict = overall_verdict(&sessions, seal.as_ref());
-        let boundary = boundary_report(self, &sessions);
+        let boundary = boundary_report(self, &sessions, approver_keys);
         let mut report = BundleReport {
             docket_report_version: REPORT_VERSION.to_owned(),
             bundle_version: self.manifest.docket_bundle_version.clone(),
@@ -1717,6 +1732,16 @@ pub struct BoundaryReport {
     /// bundle has no witness section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<WitnessSummary>,
+    /// Did an operation refused for one identity get finished by another?
+    /// The O-Node chains every refusal keyed on the canonical operation
+    /// (`gate_rejection/2`, from 2026-10-30) and refuses the cross-identity
+    /// retry itself; this is the independent reading of those bytes. A
+    /// boundary question because the chain is intact either way — every
+    /// hash and link verifies — and it is still telling you something went
+    /// around the gate. Omitted when the bundle carries no refusal-class
+    /// entry at all, so pre-feature bundles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_identity_refusal: Option<crate::refusal::RefusalEvasionReport>,
 }
 
 /// The weakest per-session `referenced_artifact_binding`, with counts.
@@ -1832,7 +1857,9 @@ fn capture_group_lines<'a>(rows: impl IntoIterator<Item = (&'a str, &'a CaptureG
         .collect()
 }
 
-fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryReport {
+fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome], approver_keys: &[PublicKey]) -> BoundaryReport {
+    let cross_identity_refusal =
+        crate::refusal::grade_refusal_evasion(&bundle.sessions, bundle.artifacts.as_ref(), approver_keys);
     let mut camera_ids: Vec<String> = Vec::new();
     for chain in &bundle.sessions {
         for id in claimed_camera_ids(chain, bundle.artifacts.as_ref()) {
@@ -1974,6 +2001,7 @@ fn boundary_report(bundle: &Bundle, sessions: &[SessionOutcome]) -> BoundaryRepo
         capture_continuity,
         referenced_artifact_binding,
         witness,
+        cross_identity_refusal,
     }
 }
 
@@ -2071,6 +2099,16 @@ impl BundleReport {
         let mut notes = Vec::new();
         if matches!(self.boundary.capture_completeness.grade, CaptureGrade::Failed { .. }) {
             notes.push("boundary result capture_completeness FAILED (beside this verdict, not inside it)".to_owned());
+        }
+        // An operation refused for one identity, finished by another. The
+        // bytes verify; the top line still names it.
+        if let Some(r) = &self.boundary.cross_identity_refusal {
+            if r.status.is_failed() {
+                notes.push(format!(
+                    "boundary result cross_identity_refusal FAILED ({} EVADED_REFUSAL; beside this verdict, not inside it)",
+                    r.findings.len()
+                ));
+            }
         }
         let named = |sessions: Vec<&str>| match sessions.len() {
             0 => None,
@@ -2360,6 +2398,7 @@ mod tests {
                 capture_continuity: None,
                 referenced_artifact_binding: None,
                 witness: None,
+                cross_identity_refusal: None,
             },
             verdict,
             headline: String::new(),
